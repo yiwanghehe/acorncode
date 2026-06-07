@@ -1,0 +1,59 @@
+# 编译产物
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# 编译输出
+/bin/
+/dist/
+/build/
+acorn
+acorn.exe
+
+# 测试覆盖
+coverage.out
+coverage.html
+*.coverprofile
+
+# Go 工作区
+go.work
+go.work.sum
+
+# 依赖
+/vendor/
+
+# 临时文件
+*.tmp
+*.bak
+*.swp
+*~
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.iml
+*.swp
+.DS_Store
+Thumbs.db
+
+# 调试/性能
+*.pprof
+*.trace
+*.test
+*.out
+acorn.test
+coverage.txt
+
+# 本地配置（不提交，但保留 acorncode.json 模板）
+acorncode.local.json
+.env
+.env.local
+*.log
+
+# 临时构建目录
+tmp/
+temp/

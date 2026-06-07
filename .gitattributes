@@ -1,0 +1,17 @@
+# 强制 LF 换行（Go 代码规范）
+*.go        text eol=lf
+*.mod       text eol=lf
+*.sum       text eol=lf
+*.md        text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.toml      text eol=lf
+
+# 二进制是 binary
+*.exe       binary
+*.dll       binary
+*.so        binary
+
+# 测试数据保留 LF
+testdata/** binary

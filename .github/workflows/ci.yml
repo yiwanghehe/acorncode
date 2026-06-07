@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Go ${{ matrix.go-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ['1.22', '1.23']
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      - name: Verify deps
+        run: go mod download
+
+      - name: Check formatting
+        run: gofmt -l . | (read line && echo "需要格式化：$line" && exit 1 || exit 0)
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test -count=1 -timeout 120s -race ./...
+
+      - name: Build
+        run: go build -o acorn ./cmd/acorn
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: acorn-${{ matrix.os }}
+          path: acorn

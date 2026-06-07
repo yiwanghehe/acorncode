@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "filePath":   {"type": "string", "description": "Absolute or relative file path"},
+    "oldString":  {"type": "string", "description": "Exact string to replace (must be unique unless replaceAll=true)"},
+    "newString":  {"type": "string", "description": "Replacement string"},
+    "replaceAll": {"type": "boolean", "description": "Replace all occurrences (default false)"}
+  },
+  "required": ["filePath", "oldString", "newString"],
+  "additionalProperties": false
+}

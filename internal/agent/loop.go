@@ -1,0 +1,617 @@
+// Package agent 实现单 session 的 Agent Loop 状态机。
+// 参考: docs/acorncode-architect.md §7.1
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"acorncode/internal/bus"
+	"acorncode/internal/instruction"
+	"acorncode/internal/llm"
+	"acorncode/internal/permission"
+	"acorncode/internal/session"
+	"acorncode/internal/tool"
+	"acorncode/internal/toolcall"
+)
+
+// ============================================================
+// 类型定义
+// ============================================================
+
+// LoopState 状态枚举（参考 §7.1.1）
+type LoopState int32
+
+const (
+	StateIdle LoopState = iota
+	StateBuildingRequest
+	StateStreaming
+	StateToolExecuting
+	StateWaitingPermission
+	StateCompacting
+	StateErrored
+	StateStopped
+)
+
+// String 把状态名用于日志和 Bus 事件
+func (s LoopState) String() string {
+	return [...]string{
+		"Idle", "BuildingRequest", "Streaming",
+		"ToolExecuting", "WaitingPermission",
+		"Compacting", "Errored", "Stopped",
+	}[s]
+}
+
+// LoopConfig 控制 loop 行为
+type LoopConfig struct {
+	AgentName    string
+	Model        llm.Model
+	MaxTurns     int // 0 = 不限
+	MaxTokens    int // 上下文预算（触发 compact）
+	MaxBashFails int // 默认 5（见 §9.5.5）
+	MaxToolRetry int // 默认 3
+	MaxSameError int // 默认 3
+	MaxTools     int // 每轮工具预算（见 §8.6）
+}
+
+// SessionStore 是 Loop 需要的 session.Service 接口子集
+type SessionStore interface {
+	GetSession(ctx context.Context, id string) (*session.Session, error)
+	Messages(ctx context.Context, sessionID string, limit int) ([]*session.Message, error)
+	AppendMessage(ctx context.Context, msg *session.Message) error
+	UpsertPart(ctx context.Context, p session.Part) error
+	GetPart(ctx context.Context, id string) (session.Part, error)
+	SetFinishReason(ctx context.Context, messageID string, reason string) error
+}
+
+// turnState 跟踪一个 turn 内的失败（见 §9.5.5）
+type turnState struct {
+	bashFails    int
+	toolAttempts map[string]int
+	sameErrCount map[string]int
+}
+
+func newTurnState() *turnState {
+	return &turnState{
+		toolAttempts: make(map[string]int),
+		sameErrCount: make(map[string]int),
+	}
+}
+
+// Loop 是单 session 的状态机实例。
+// 重要：每个 Loop 由单 goroutine 拥有，无并发访问。
+// state 字段不需要原子操作，因为所有转移都发生在 Run() 同一 goroutine 上。
+type Loop struct {
+	sessionID string
+	cfg       LoopConfig
+	store     SessionStore
+	bus       *bus.Bus
+	llm       llm.Provider
+	strategy  toolcall.Strategy
+	tools     *tool.Registry
+	perm      *permission.Broker
+	instr     *instruction.Loader
+
+	state LoopState
+	turn  int
+	fail  *turnState
+}
+
+// NewLoop 构造 Loop（手工 DI 模式，见 §3.4）
+func NewLoop(sessionID string, cfg LoopConfig, store SessionStore, b *bus.Bus, p llm.Provider, s toolcall.Strategy, t *tool.Registry, pb *permission.Broker, il *instruction.Loader) *Loop {
+	return &Loop{
+		sessionID: sessionID,
+		cfg:       cfg,
+		store:     store,
+		bus:       b,
+		llm:       p,
+		strategy:  s,
+		tools:     t,
+		perm:      pb,
+		instr:     il,
+		state:     StateIdle,
+		fail:      newTurnState(),
+	}
+}
+
+// CurrentState 返回当前状态（用于测试和 TUI 显示）
+func (l *Loop) CurrentState() LoopState {
+	return l.state
+}
+
+// ============================================================
+// 错误定义
+// ============================================================
+
+var (
+	errNeedCompact = errors.New("上下文预算超限，需要 compact")
+	errTurnAborted = errors.New("turn 中止：失败次数过多")
+	errFatal       = errors.New("fatal 错误")
+)
+
+// ============================================================
+// 核心：Run 主循环
+// ============================================================
+
+// Run 驱动一条用户消息完成整个 turn。
+// 返回时机：ctx 取消、收到 stop、达到 max turns、或不可恢复错误。
+func (l *Loop) Run(ctx context.Context, userMsg *session.UserMessage) error {
+	slog.InfoContext(ctx, "loop.Run 启动", "session_id", l.sessionID)
+	defer func() {
+		slog.InfoContext(ctx, "loop.Run 结束", "session_id", l.sessionID, "state", l.CurrentState().String())
+	}()
+
+	if err := l.guard(ctx, StateIdle); err != nil {
+		return err
+	}
+
+	l.turn = 0
+	l.fail = newTurnState()
+
+	for {
+		// ctx 取消：立即退出
+		if err := ctx.Err(); err != nil {
+			l.setState(ctx, StateStopped)
+			return err
+		}
+
+		// 1. 构造请求
+		l.setState(ctx, StateBuildingRequest)
+		req, err := l.buildRequest(ctx, userMsg)
+		if err != nil {
+			if errors.Is(err, errNeedCompact) {
+				l.setState(ctx, StateCompacting)
+				if cerr := l.compact(ctx); cerr != nil {
+					return l.fatal(ctx, fmt.Errorf("compact 失败: %w", cerr))
+				}
+				continue
+			}
+			return l.fatal(ctx, err)
+		}
+
+		// 2. 流式调 LLM
+		l.setState(ctx, StateStreaming)
+		calls, finish, err := l.streamAndProcess(ctx, req)
+		if err != nil {
+			return l.handleError(ctx, err)
+		}
+
+		// 3. 退出条件
+		if finish != nil && finish.Reason == "stop" && len(calls) == 0 {
+			l.setState(ctx, StateStopped)
+			return nil
+		}
+
+		// 4. 执行 tool calls
+		if len(calls) > 0 {
+			l.setState(ctx, StateToolExecuting)
+			if err := l.executeToolCalls(ctx, calls); err != nil {
+				if errors.Is(err, errTurnAborted) {
+					// 熔断：让下一轮模型看到错误，循环继续
+					l.turn++
+					continue
+				}
+				return l.fatal(ctx, err)
+			}
+		}
+
+		// 5. 检查 turn 上限
+		l.turn++
+		if l.cfg.MaxTurns > 0 && l.turn >= l.cfg.MaxTurns {
+			l.setState(ctx, StateStopped)
+			return nil
+		}
+
+		// 第二轮起不再重复用户消息
+		userMsg = nil
+	}
+}
+
+// ============================================================
+// 构造请求
+// ============================================================
+
+func (l *Loop) buildRequest(ctx context.Context, userMsg *session.UserMessage) (*llm.ChatRequest, error) {
+	// 1. 读历史
+	history, err := l.store.Messages(ctx, l.sessionID, 0)
+	if err != nil {
+		return nil, fmt.Errorf("读历史失败: %w", err)
+	}
+
+	// 2. 加载 AGENTS.md
+	instrContent, err := l.instr.Load(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "加载 instruction 失败", "err", err)
+	}
+
+	// 3. 组装 system prompt
+	system := l.buildSystemPrompt(instrContent)
+
+	// 4. 工具裁剪
+	pickedTools := l.tools.PickForTurn(
+		l.cfg.AgentName,
+		l.cfg.MaxTools,
+		lastUserText(history),
+		recentToolCalls(history),
+	)
+
+	// 5. 估算 token，超限则触发 compact
+	if estimateTokens(history, pickedTools) > l.cfg.MaxTokens {
+		return nil, errNeedCompact
+	}
+
+	// 6. 构造 ChatRequest
+	req := &llm.ChatRequest{
+		Model:   l.cfg.Model,
+		System:  system,
+		Tools:   toolDefsToLLM(pickedTools),
+		History: toModelMessages(history),
+	}
+
+	// 7. 追加新用户消息
+	if userMsg != nil {
+		req.History = append(req.History, llm.Message{
+			Role:    "user",
+			Content: userMsg.Text,
+		})
+	}
+
+	return req, nil
+}
+
+// buildSystemPrompt 拼接 system prompt（builtin + AGENTS.md）
+func (l *Loop) buildSystemPrompt(agentsMD string) []string {
+	var sections []string
+	sections = append(sections, builtinBasePrompt)
+	if agentsMD != "" {
+		sections = append(sections, "# Project Conventions\n\n"+agentsMD)
+	}
+	return sections
+}
+
+// ============================================================
+// 流式处理
+// ============================================================
+
+// streamAndProcess 调 LLM 拿到事件流，由 Processor 应用到 assistant message
+func (l *Loop) streamAndProcess(ctx context.Context, req *llm.ChatRequest) ([]ToolCall, *llm.FinishEvent, error) {
+	rawCh, err := l.llm.Stream(ctx, *req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("llm stream 失败: %w", err)
+	}
+
+	// Strategy.ParseStream 把 raw chunks 转 typed events
+	typedCh := l.strategy.ParseStream(ctx, rawCh)
+
+	assistant := l.createAssistantMessage()
+	processor := newProcessor(assistant, l.bus, l.store)
+
+	for ev := range typedCh {
+		if err := processor.Apply(ctx, ev); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	// 保存 assistant message
+	if err := l.store.AppendMessage(ctx, processor.Message()); err != nil {
+		return nil, nil, err
+	}
+
+	// 收集 tool calls
+	calls := processor.PendingToolCalls()
+	var finish *llm.FinishEvent
+	if f := processor.FinishEvent(); f != nil {
+		finish = f
+	}
+
+	return calls, finish, nil
+}
+
+// createAssistantMessage 创建 assistant 消息骨架
+func (l *Loop) createAssistantMessage() *session.Message {
+	return &session.Message{
+		ID:        newID("msg"),
+		SessionID: l.sessionID,
+		Role:      "assistant",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+}
+
+// ============================================================
+// 工具执行（含 Permission）
+// ============================================================
+
+// executeToolCalls 串行执行一组 tool calls
+func (l *Loop) executeToolCalls(ctx context.Context, calls []ToolCall) error {
+	for _, call := range calls {
+		// 1. 权限询问
+		l.setState(ctx, StateWaitingPermission)
+		if err := l.perm.Ask(ctx, permission.Request{
+			ID:         newID("perm"),
+			SessionID:  l.sessionID,
+			Permission: call.ToolID,
+			Patterns:   call.Patterns(),
+			Tool: &permission.ToolRef{
+				MessageID: call.MessageID,
+				CallID:    call.CallID,
+			},
+		}); err != nil {
+			slog.InfoContext(ctx, "工具权限被拒",
+				"tool", call.ToolID, "call_id", call.CallID)
+			l.recordToolRejected(ctx, call, err.Error())
+			continue
+		}
+
+		// 2. 执行
+		l.setState(ctx, StateToolExecuting)
+		t, ok := l.tools.Get(call.ToolID)
+		if !ok {
+			l.recordToolRejected(ctx, call, fmt.Sprintf("未知工具: %s", call.ToolID))
+			continue
+		}
+
+		args, _ := json.Marshal(call.Args)
+		tc := tool.Context{
+			SessionID: l.sessionID,
+			MessageID: call.MessageID,
+			Agent:     l.cfg.AgentName,
+			CallID:    call.CallID,
+			Cwd:       l.sessionCwd(),
+			Ask:       l.perm.Ask, // 工具内可递归调 Ask
+		}
+
+		result, _ := t.Execute(ctx, args, tc)
+
+		// 3. 熔断检查（见 §9.5.5）
+		if err := l.checkCutoff(ctx, call, result); err != nil {
+			return err
+		}
+
+		// 4. 更新已有 part（processor 创的）而不是新建
+		l.updateToolPart(ctx, call, result)
+	}
+	return nil
+}
+
+// checkCutoff 监控连续失败，超阈值返 errTurnAborted（见 §9.5.5）
+func (l *Loop) checkCutoff(ctx context.Context, call ToolCall, result tool.Result) error {
+	sig := errSignature(call, result)
+
+	// 规则 1：同 tool call 重试上限
+	l.fail.toolAttempts[call.CallID]++
+	maxRetry := l.cfg.MaxToolRetry
+	if maxRetry == 0 {
+		maxRetry = 3
+	}
+	if l.fail.toolAttempts[call.CallID] > maxRetry {
+		return fmt.Errorf("%w: 工具 %s 超过重试上限（换思路或问用户）", errTurnAborted, call.ToolID)
+	}
+
+	// 规则 2：Bash 连续失败上限
+	if call.ToolID == "bash" && result.Status == "error" {
+		l.fail.bashFails++
+		maxBash := l.cfg.MaxBashFails
+		if maxBash == 0 {
+			maxBash = 5
+		}
+		if l.fail.bashFails > maxBash {
+			return fmt.Errorf("%w: bash 在本 turn 失败 %d 次，可能陷入修复循环，STOP 并问用户", errTurnAborted, maxBash)
+		}
+	}
+
+	// 规则 3：同一错误签名连续上限
+	l.fail.sameErrCount[sig]++
+	maxSame := l.cfg.MaxSameError
+	if maxSame == 0 {
+		maxSame = 3
+	}
+	if l.fail.sameErrCount[sig] > maxSame {
+		return fmt.Errorf("%w: 同一错误 %q 出现 %d 次，STOP 换思路", errTurnAborted, sig, maxSame)
+	}
+	return nil
+}
+
+// errSignature 用 tool + status + 错误首行作为熔断签名
+func errSignature(call ToolCall, result tool.Result) string {
+	firstLine := strings.SplitN(result.Output, "\n", 2)[0]
+	if len(firstLine) > 80 {
+		firstLine = firstLine[:80]
+	}
+	return call.ToolID + "|" + result.Status + "|" + firstLine
+}
+
+// ============================================================
+// Compaction（Phase 2 才实现）
+// ============================================================
+
+// compact 是压缩入口，v1 stub：返回错误让 Loop 退出
+func (l *Loop) compact(ctx context.Context) error {
+	slog.InfoContext(ctx, "compact 触发", "session_id", l.sessionID)
+	return errors.New("compactor 尚未实现，留待 Phase 2")
+}
+
+// ============================================================
+// 状态机辅助
+// ============================================================
+
+// guard 检查当前状态是否为期望状态
+func (l *Loop) guard(ctx context.Context, expected LoopState) error {
+	cur := l.CurrentState()
+	if cur != expected {
+		return fmt.Errorf("%w: 期望状态 %s, 当前 %s", errFatal, expected, cur)
+	}
+	return nil
+}
+
+// setState 转移状态并发出 Bus 事件（同状态转移不发）
+func (l *Loop) setState(ctx context.Context, to LoopState) {
+	from := l.state
+	if from == to {
+		return
+	}
+	l.state = to
+	l.publishStateChange(ctx, from, to)
+}
+
+// publishStateChange 发出状态变更事件
+func (l *Loop) publishStateChange(ctx context.Context, from, to LoopState) {
+	l.bus.Publish(bus.Event{
+		Type:      bus.EventAgentStateChange,
+		SessionID: l.sessionID,
+		Data: map[string]any{
+			"from": from.String(),
+			"to":   to.String(),
+		},
+	})
+}
+
+// handleError 处理可恢复错误（errTurnAborted 走重试路径，其他走 fatal）
+func (l *Loop) handleError(ctx context.Context, err error) error {
+	if errors.Is(err, errTurnAborted) {
+		l.setState(ctx, StateBuildingRequest)
+		return nil
+	}
+	return l.fatal(ctx, err)
+}
+
+// fatal 终止 Loop，发出错误事件
+func (l *Loop) fatal(ctx context.Context, err error) error {
+	slog.ErrorContext(ctx, "loop fatal", "err", err, "session_id", l.sessionID)
+	l.bus.Publish(bus.Event{
+		Type:      bus.EventError,
+		SessionID: l.sessionID,
+		Data:      map[string]any{"err": err.Error(), "fatal": true},
+	})
+	l.setState(ctx, StateErrored)
+	l.setState(ctx, StateStopped)
+	return err
+}
+
+// ============================================================
+// 结果写回
+// ============================================================
+
+// recordToolRejected 记录工具被拒（permission 拒 / 未知工具）
+func (l *Loop) recordToolRejected(ctx context.Context, call ToolCall, errMsg string) {
+	part := l.lookupOrNewToolPart(ctx, call)
+	part.State = session.ToolRejected
+	part.Error = errMsg
+	part.EndedAt = time.Now().UnixMilli()
+	_ = l.store.UpsertPart(ctx, part)
+	l.bus.Publish(bus.Event{
+		Type: bus.EventPartUpdated, SessionID: l.sessionID,
+		Data: part,
+	})
+}
+
+// updateToolPart 更新 processor 创的 part 状态（工具完成后）
+func (l *Loop) updateToolPart(ctx context.Context, call ToolCall, result tool.Result) {
+	state := session.ToolComplete
+	if result.Status == "error" {
+		state = session.ToolErrored
+	}
+
+	part := l.lookupOrNewToolPart(ctx, call)
+	part.Output = result.Output
+	part.Title = result.Title
+	part.State = state
+	part.EndedAt = time.Now().UnixMilli()
+	part.Error = result.Error
+	_ = l.store.UpsertPart(ctx, part)
+	l.bus.Publish(bus.Event{
+		Type: bus.EventPartUpdated, SessionID: l.sessionID,
+		Data: part,
+	})
+}
+
+// lookupOrNewToolPart 优先用 call.PartID 找 store 里已有 part（processor 创的），
+// 找不到就新建。这样保证 ToolPart 在 turn 中只创建一次。
+func (l *Loop) lookupOrNewToolPart(ctx context.Context, call ToolCall) *session.ToolPart {
+	if call.PartID != "" {
+		if p, err := l.store.GetPart(ctx, call.PartID); err == nil {
+			if tp, ok := p.(*session.ToolPart); ok {
+				return tp
+			}
+		}
+	}
+	return &session.ToolPart{
+		ID:        newID("prt"),
+		MessageID: call.MessageID,
+		SessionID: l.sessionID,
+		CallID:    call.CallID,
+		ToolID:    call.ToolID,
+		Args:      marshalArgs(call.Args),
+	}
+}
+
+// ============================================================
+// 辅助函数
+// ============================================================
+
+// sessionCwd 返回 session 工作目录（从 store 读 session.Directory）
+func (l *Loop) sessionCwd() string {
+	sess, err := l.store.GetSession(context.Background(), l.sessionID)
+	if err == nil && sess != nil && sess.Directory != "" {
+		return sess.Directory
+	}
+	return "."
+}
+
+// ToolCall 是 Loop 内部对 LLM 工具调用的视图
+type ToolCall struct {
+	MessageID string
+	CallID    string
+	ToolID    string
+	Args      map[string]any
+	PartID    string // 对应的 ToolPart.ID（processor 创建时填）
+}
+
+// Patterns 返回 permission 匹配的 pattern 列表
+func (c ToolCall) Patterns() []string {
+	return []string{c.ToolID}
+}
+
+// marshalArgs 把 args map 转为 json.RawMessage
+func marshalArgs(args map[string]any) json.RawMessage {
+	if args == nil {
+		return nil
+	}
+	b, _ := json.Marshal(args)
+	return b
+}
+
+// newID 生成唯一 ID。
+// TODO: 替换为 KSUID/ULID（见 §6.1）
+func newID(prefix string) string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	now := time.Now().UnixNano()
+	b := make([]byte, 16)
+	for i := range b {
+		b[i] = chars[now%int64(len(chars))]
+		now /= int64(len(chars))
+		if now == 0 {
+			now = time.Now().UnixNano()
+		}
+	}
+	return prefix + "_" + string(b)
+}
+
+// toolDefsToLLM 把 tool.Definition 转为 llm.Definition
+func toolDefsToLLM(in []tool.Definition) []llm.Definition {
+	out := make([]llm.Definition, len(in))
+	for i, t := range in {
+		out[i] = llm.Definition{
+			ID:          t.ID,
+			Description: t.Description,
+			Keywords:    t.Keywords,
+			JSONSchema:  t.JSONSchema,
+		}
+	}
+	return out
+}
