@@ -61,8 +61,15 @@ func run(modelName string) error {
 	tools.RegisterGrep(cwd)
 	tools.RegisterGlob(cwd)
 
-	// 4. Permission broker（v0.1 始终允许）
+	// 4. Permission broker（v0.3 加载 acorncode.json 规则）
 	broker := permission.NewBroker(nil)
+	permCfg, permErr := permission.LoadConfig("acorncode.json")
+	if permErr != nil {
+		fmt.Fprintf(os.Stderr, "[警告: acorncode.json 解析失败: %v]\n", permErr)
+	} else if permCfg != nil {
+		broker.AddRules(permCfg.Permissions.Rules)
+		fmt.Fprintf(os.Stderr, "[已加载 acorncode.json: %d 规则]\n", len(permCfg.Permissions.Rules))
+	}
 
 	// 5. 加载 AGENTS.md（v0.1 容错：找不到不报错）
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -104,7 +111,7 @@ func run(modelName string) error {
 	defer func() { <-bridgeDone }()
 
 	// 9. REPL
-	fmt.Printf("AcornCode v0.1 (model: %s)\n", modelName)
+	fmt.Printf("AcornCode v0.3 (model: %s)\n", modelName)
 	fmt.Printf("Session: %s\n", sess.ID)
 	fmt.Printf("Tools: read, edit, bash, grep, glob\n")
 	fmt.Printf("输入你的消息（'exit' 退出）:\n\n")
