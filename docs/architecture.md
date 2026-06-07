@@ -1,32 +1,33 @@
-# AcornCode 架构（v0.5 整合版）
+# AcornCode 架构（v1.0 完整版）
 
-> 当前真实实现的架构。Phase 2+ 推迟的内容（GBNF、Compaction、HTTP Server 等）不在此文档。
+> 当前真实实现的架构。v1.x 推迟的内容（GBNF、MCP、HTTP 鉴权）不在此文档。
 
 ## 1. 一句话
 
 本地小模型优先的 Go 编码 agent，能自举开发（让模型自己写新工具）。
 
-**对比 opencode**：单二进制 / 4 第三方依赖（bubbletea / lipgloss / sqlite / sqlx）/ Ollama + Native toolcall / Bubble Tea TUI。详见 [README.md §对比表](../README.md)。
+**对比 opencode**：单二进制 / 4 第三方依赖 / 双 provider（Ollama + Anthropic）/ 双 toolcall 策略（Native + Prompted）/ Bubble Tea TUI / HTTP/SSE API。详见 [README.md §对比表](../README.md)。
 
 ## 2. 分层
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  CLI (cmd/acorn/main.go)                            │  Bubble Tea TUI
-│  - TTY 检测（无 TTY → 清晰错误）                     │
-│  - 启动 SQLite + Ollama + 工具 + Broker + TUI       │
+│  CLI (cmd/acorn/main.go)                            │  Bubble Tea TUI | HTTP/SSE
+│  - TTY 检测（TUI 模式才有）                          │
+│  - 5 flag: --provider / --toolcall / --server / --db / model
+│  - 启 SQLite + Provider + 工具 + Broker + TUI/Server │
 └────────────────────┬────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────┐
 │  Agent Loop (internal/agent)                        │  8 状态机 + 3 熔断
-│  ├─ loop.go:        状态机 + LLM 调度               │
+│  ├─ loop.go:        状态机 + LLM 调度 + Compaction  │
 │  ├─ processor.go:   流式 chunk → part 状态          │
 │  └─ helpers.go:     token 估算 / 消息转换 / system  │
 └─┬──────┬──────┬──────┬──────┬──────┬─────────────────┘
   │      │      │      │      │      │
   ▼      ▼      ▼      ▼      ▼      ▼
  LLM   Tool   Perm   Sess   Bus   Instr
- (Ollama)  (read/edit/bash/grep/glob/webfetch)  (broker)  (SQLite)  (6 events)  (AGENTS.md)
+ (Ollama/Anthropic)  (6 tools)  (broker)  (SQLite)  (6 events)  (AGENTS.md)
 ```
 
 ## 3. 核心契约
@@ -54,68 +55,64 @@ type Result struct {
 
 ```go
 type Provider interface {
-    Stream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error)
-}
-
-type ChatRequest struct {
-    Model   Model
-    System  []string
-    History []Message
-    Tools   []ToolSchema
+    Stream(ctx context.Context, req ChatRequest) (<-chan RawChunk, error)
+    ListModels(ctx context.Context) ([]string, error)
 }
 ```
 
-`StreamEvent` 是 sealed interface（`TextDelta` / `ToolCallStart` / `ToolCallDelta` / `ToolCallEnd` / `ReasoningDelta` / `FinishEvent`）。
+`RawChunk` 类型：`"text"` / `"tool_call"` / `"finish"` / `"error"` / `"thinking"` / `"tool_call_delta"`。
 
-**Ollama 实现**（`internal/llm/ollama.go`）：NDJSON 流式 + `tools` 字段 + ctx 取消。
+**两个实现**（v1.0）：
+- **Ollama**（`internal/llm/ollama.go`）：NDJSON 流式 + `tools` 字段 + ctx 取消
+- **Anthropic**（`internal/llm/anthropic.go`，v1.0.2）：Anthropic Messages API + SSE + tool schema 转换（OpenAI function → Anthropic tools）
 
 ### 3.3 Toolcall Strategy
 
 ```go
 type Strategy interface {
     Name() string
-    Extract(resp *RawResponse) ([]ToolCall, error)
+    Prepare(req *ChatRequest, tools []Definition) error
+    ParseStream(ctx, raw <-chan RawChunk) <-chan StreamEvent
+    RetryHint(failed FailedCall, tools []Definition) (asst, user Message)
 }
 ```
 
-v0.5 只实现 **Native**（`internal/toolcall/native.go`）：解析 `message.tool_calls` 数组。
-- `arguments` 是**字符串化的 JSON**，需要二次 `json.Unmarshal`
-- Ollama 单 chunk 返回**完整对象**（非 delta），不需要累积
+**两个实现**（v1.0）：
+
+| 策略 | 适用 | 文件 |
+|------|------|------|
+| **Native** | Ollama/Anthropic/OpenAI 自带 | `native.go` |
+| **Prompted** | 小模型（无原生 tool_call） | `prompted.go`，v1.0.5 |
 
 ### 3.4 Bus
 
 ```go
 const (
-    EventPartDelta        = "part.delta"         // 文本增量
-    EventPartUpdated      = "part.updated"       // 工具 part 状态变化
-    EventPermissionAsked  = "permission.asked"   // v1.0
-    EventPermissionReply  = "permission.replied" // v1.0
-    EventAgentStateChange = "agent.state.change" // 状态机切换
-    EventError            = "error"              // 错误（含 fatal 标志）
+    EventPartDelta        = "part.delta"          // 文本增量
+    EventPartUpdated      = "part.updated"        // 工具 part 状态变化
+    EventPermissionAsked  = "permission.asked"    // v1.0.1
+    EventPermissionReply  = "permission.replied"  // v1.0.1
+    EventAgentStateChange = "agent.state.change"  // 状态机切换
+    EventError            = "error"               // 错误（含 fatal 标志）
 )
 ```
 
-**v0.5 简化**：
+v1.0 简化：
 - 64-buffered channels
 - 慢消费者 **drop + warn**（不阻塞 LLM 流）
 - 无 replay buffer
-- 6 个事件类型
 
-**Producer**：`agent/loop.go` + `agent/processor.go` 在状态变化时发。
-**Consumer**：`tui/model.go` 订阅 `part.delta` / `part.updated` / `agent.state.change` / `error`（4 个 topic，2 个 permission event 留 v1.0）。
+**Consumer**（v1.0.1+）：
+- `tui/model.go` 订阅 5 topic（`permission.asked` / `permission.replied` 加 v1.0.1）
+- `server/server.go` 转发 4 topic → SSE 流
 
 ### 3.5 Session
 
 ```go
 type Store interface {
-    CreateSession(ctx, *Session) error
-    GetSession(ctx, id) (*Session, error)
-    ListSessions(ctx) ([]*Session, error)
-    Messages(ctx, sessionID, limit) ([]*Message, error)
-    AppendMessage(ctx, *Message) error
-    SetFinishReason(ctx, messageID, reason) error
-    UpsertPart(ctx, Part) error
-    GetPart(ctx, id) (Part, error)
+    CreateSession / GetSession / ListSessions
+    Messages / AppendMessage / SetFinishReason
+    UpsertPart / GetPart
 }
 ```
 
@@ -126,36 +123,36 @@ type Store interface {
 8 状态 + 7 转换 + 3 道重试熔断。详见 `internal/agent/loop.go`。
 
 ```
-                ┌──────┐
-                │ Idle │
-                └──┬───┘
-                   │ 收到 user 消息
-                   ▼
-              ┌────────┐
-              │Building│  ← 构造 ChatRequest
-              └───┬────┘
-                  │ 调 LLM.Stream
-                  ▼
-            ┌──────────┐
-            │Streaming │  ← 收 RawChunk
-            └────┬─────┘
-                 │ 收到 tool_call
-                 ▼
-            ┌──────────┐
-            │ ToolExec │  ← Execute + 权限询问
-            └────┬─────┘
-                 │ 完成
-                 ▼
-            ┌──────────┐
-            │Streaming │  ← 继续生成
-            └────┬─────┘
-                 │ 收到 done
-                 ▼
               ┌──────┐
-              │ Idle │  ← 写消息，等下一轮
-              └──────┘
+              │ Idle │
+              └──┬───┘
+                 │ 收到 user 消息
+                 ▼
+            ┌────────┐
+            │Building│  ← 构造 ChatRequest
+            └────┬───┘
+                 │ 调 LLM.Stream
+                 ▼
+           ┌──────────┐
+           │Streaming │  ← 收 RawChunk
+           └────┬─────┘
+                │ 收到 tool_call
+                ▼
+           ┌──────────┐
+           │ ToolExec │  ← Execute + 权限询问
+           └────┬─────┘
+                │ 完成
+                ▼
+           ┌──────────┐
+           │Streaming │  ← 继续生成
+           └────┬─────┘
+                │ 收到 done
+                ▼
+             ┌──────┐
+             │ Idle │
+             └──────┘
 
-边角：Errored（任何错） / Stopped（ctx cancel） / WaitPerm（v1.0）
+边角：Errored / Stopped / Compacting（v1.0.3）
 ```
 
 ### 三道熔断
@@ -166,141 +163,135 @@ type Store interface {
 | 连续 bash 失败 N 次 | 5 | 跳出 bash，进 Errored |
 | 同一错误签名重复 N 次 | 3 | 跳出循环，进 Errored |
 
-`Errored` 状态记到 session，UI 显示给用户。
+### Compaction（v1.0.3）
 
-## 5. Tool 实现（v0.5 6 个）
+`errNeedCompact` 触发 → `l.compactor.Compact(ctx, history)` → 摘要老消息保留最近 6 条 → 继续 turn。
+当前实现：`SimpleCompactor`（调同 LLM 摘要），失败时返原 history 不阻断。
+
+## 5. 6 个 Tool（v0.5+，v1.0 不变）
 
 | Tool | 文件 | 测试 | 关键设计 |
 |------|------|------|----------|
-| read | `internal/tool/read.go` | 22 | 路径 normalize + JSON schema 验证 + 行号偏移 + ctx 取消 |
-| edit | `internal/tool/edit.go` | 12 | 字符串替换 + 原子写 + 模糊匹配（old_text 缩进不一致也能改） |
-| bash | `internal/tool/bash.go` | 16 | 30s 默认 timeout + 输出截断（头尾各半，50KB 总） + **非零退出仍 success**（让模型看 stderr 修复） |
-| grep | `internal/tool/grep.go` | 17 | path/pattern/include/ignore_case/line_numbers/max_results；跳过重目录 + 二进制；输出 `path\tline:content` |
-| glob | `internal/tool/glob.go` | 18 | 自实现 `*` `**` `?` `[abc]`（0 依赖）；type 过滤 file/dir/any |
-| webfetch | `internal/tool/webfetch.go` | 19 | HTTP/HTTPS + 30s timeout + 1MB body + **SSRF 禁私有 IP** + 重定向 5 次限制 + 自定义 headers |
+| read | `internal/tool/read.go` | 22 | 路径 normalize + JSON schema + 行号 + ctx |
+| edit | `internal/tool/edit.go` | 12 | 字符串替换 + 原子写 + 模糊匹配 |
+| bash | `internal/tool/bash.go` | 16 | 30s timeout + 截断 + 非零仍 success |
+| grep | `internal/tool/grep.go` | 17 | path/pattern/include/ignore_case + 跳重目录 |
+| glob | `internal/tool/glob.go` | 18 | 自实现 `*` `**` `?` `[abc]`（0 依赖） |
+| webfetch | `internal/tool/webfetch.go` | 19 | HTTP + 30s + 1MB + **SSRF 禁私有 IP** |
 
-所有 tool 的 `Execute()` 第一步都是路径 normalize：
+所有 tool 第一步 normalize 路径：`tc.Cwd` base + `filepath.Clean`。
 
-```go
-if !filepath.IsAbs(path) {
-    path = filepath.Join(tc.Cwd, path)
-}
-path = filepath.Clean(path)
-```
+## 6. TUI（v0.4+，v1.0.1 多 topic）
 
-## 6. TUI（v0.4+，v0.6 完善）
+Bubble Tea + Lipgloss。订阅 5 个 Bus topic：
 
-Bubble Tea + Lipgloss。**v0.6 起订阅 4 个 Bus topic**：
-
-| 事件 | 渲染效果 |
-|------|---------|
-| `part.delta` | 中部正文追加文本 |
-| `part.updated` (tool pending) | 状态栏 `→ tool_name` |
-| `part.updated` (tool complete) | 状态栏 `✓ tool done` |
-| `part.updated` (tool errored) | 状态栏 `✗ tool error: ...` |
-| `agent.state.change` | 状态栏直接显示新 state |
+| 事件 | 渲染 |
+|------|------|
+| `part.delta` | 中部正文追加 |
+| `part.updated` (pending) | 状态栏 `→ tool` |
+| `part.updated` (complete) | 状态栏 `✓ done` |
+| `part.updated` (errored) | 状态栏 `✗ error: ...` |
+| `agent.state.change` | 状态栏显示新 state |
+| `permission.asked` | **弹窗**（v1.0.1）3 选项 |
 | `error` (fatal) | 状态栏 `FATAL: ...` |
 
-**布局**：
-- 顶部状态栏：`[model] status`
-- 中部正文：当前 turn 累积文本
-- 底部 input box：`> ` + 用户输入
+**布局**：状态栏 / 正文 / input box。**权限弹窗**（v1.0.1）：1/Allow / 2/Always / 3/Deny + 左/右循环。
 
-**快捷键**：Ctrl+C / Esc 退出；Enter 发送；Backspace 删除
+**TTY 要求**：无 TTY → 清晰错误，CI 用 `--server=:8080`。
 
-**命令**：`/exit` `/quit` `/clear` `/session` `/help`
-
-**TTY 要求**（v0.6 整合）：无 TTY 时返清晰错误，CI 场景需 v1.0 HTTP API。
-
-## 7. Session 存储（v0.5+）
-
-`SQLiteStore`（v0.5 起默认）实现：
+## 7. Session 存储（v0.5+ SQLite）
 
 ```sql
-CREATE TABLE sessions (id TEXT PK, parent_id, title, directory, agent, created_at_ms, updated_at_ms);
-CREATE TABLE messages (id TEXT PK, session_id, role, finish_reason, created_at_ms, updated_at_ms);
-CREATE TABLE parts (id TEXT PK, message_id, session_id, type TEXT, data BLOB, created_at_ms);
+CREATE TABLE sessions (id TEXT PK, ..., created_at_ms, updated_at_ms);
+CREATE TABLE messages (id TEXT PK, session_id, role, finish_reason, ...);
+CREATE TABLE parts (id TEXT PK, message_id, session_id, type TEXT, data BLOB, ...);
 ```
 
-关键：
-- WAL + 单连接（写多读少）
-- 时间戳毫秒精度
-- Part 用 `type` 列 + JSON BLOB 存 data
-- `MemoryStore` 仍保留供测试
-- 默认 db 文件：`.acorncode.db`（`--db=path` 改）
+关键：WAL + 单连接 + 毫秒精度 + `type` 列 + JSON BLOB。
 
-## 8. 自举开发模式
+## 8. HTTP/SSE Server（v1.0.4）
+
+`./acorn --server=:8080` 启 HTTP：
+
+| 端点 | 方法 | 描述 |
+|------|------|------|
+| `/healthz` | GET | 健康检查 |
+| `/v1/chat` | POST | SSE 流响应 |
+
+**SSE 事件序列**：`session` → `text` ×N → `part` ×N（tool）→ `state` → `finish`。
+
+`Permission.Ask` 在 server 模式无 publisher → fallback allow（headless 无 TUI）。
+
+## 9. Permission Broker（v1.0.1 真 ask）
+
+```go
+func (b *Broker) Ask(ctx, req) error {
+    // 1. 匹配 rule
+    //    allow → nil
+    //    deny  → ErrDenied
+    //    ask   → 发 permission.asked + 阻塞等 Reply（60s 超时默认 deny）
+    // 2. 无 rule：检查 session allow list
+    // 3. 默认 allow（v0.1 兼容）
+}
+```
+
+`Publisher` 接口让 broker 发事件，**不依赖具体 bus**（避免 import 循环）。
+
+## 10. 自举开发模式
 
 核心差异化：让模型用 AcornCode 写新 AcornCode 工具。
-
-### 8.1 流程
 
 ```
 人: "加 Grep 工具，参考 Read"
   ↓
 模型 (用 AcornCode 自己):
-  - Read(read.go)
-  - Read(AGENTS.md)         ← 项目约定
-  - Write(grep.go)
-  - Write(grep_test.go)     ← ≥10 测试
-  - Write(schemas/grep.json)
-  - Bash("go build")        ← stderr 自然修复
-  - Bash("go test")
-  - Edit(AGENTS.md)         ← 更新"已实现"
+  - Read(read.go) + Read(AGENTS.md)
+  - Write(grep.go + grep_test.go + schemas/grep.json)
+  - Bash("go build" + "go test")
+  - Edit(AGENTS.md)
   ↓
 人: review 5 分钟，合并
 ```
 
-### 8.2 关键支撑
+关键支撑：`AGENTS.md`（硬规则）/ 工具接口统一 / 错误回灌 / 测试当文档。
 
-1. **`AGENTS.md`** — 项目约定硬规则（中文注释 / 失败处理 / Tool 模板 / 已知坑）
-2. **README.md §当前状态 / §已实现** — 当前阶段 + 已实现模块
-3. **Tool 接口统一** — 模型学 1 个 example 就能写下一个
-4. **错误回灌** — Bash 非零退出不返回 hard error，模型看 stderr 自助
-5. **测试当文档** — 每个 tool ≥10 测试覆盖
+## 11. v1.0 完整命令
 
-## 9. v0.5 范围约束
+```
+acorn [model]
+  --provider=NAME        ollama | anthropic（默认 ollama）
+  --toolcall=NAME        native | prompted（默认 native）
+  --server=ADDR          启 HTTP server（v1.0.4）
+  --db=path              SQLite 路径（默认 .acorncode.db）
+```
 
-| 不做 | 推到 | 原因 |
-|------|------|------|
-| Permission ask 弹窗 | v1.0 | 简化 TUI，ask 默认 allow + log |
-| Compaction | v1.0 | 长 session 才需要 |
-| Grammar/Prompted 策略 | v1.0 | Native 跑通 |
-| Anthropic/OpenAI | v1.0 | Ollama 跑通 |
-| HTTP/SSE Server | v1.0 | CLI 优先 |
-| MCP stdio Client | v2+ | 不是核心 |
-| Capability Probe | 不做 | Provider 自己声明 |
+## 12. 关键设计决策
 
-**v0.5 实际依赖**（4 个）：bubbletea / lipgloss / modernc-sqlite / sqlx。
+### D1 — Go 原生 + 4 依赖（v1.0 平衡）
 
-## 10. 关键设计决策
+- 0 依赖（v0.1-v0.3）→ 4 依赖（v1.0）：bubbletea + lipgloss + sqlite + sqlx
+- 单二进制 ~10MB
+- 模型学 1 个 stdlib + 4 API 比学 10 个第三方库快
 
-### D1 — Go 原生 + 最小依赖
-
-- 0 → 4 第三方依赖：v0.1-v0.3 纯 stdlib，v0.4 起加 TUI，v0.5 加 SQLite
-- 单二进制 ~10MB（无 CGo）
-- 模型学 1 个 stdlib + 4 个 API 比学 10 个第三方库快
-
-### D2 — ToolCall 三策略（v0.5 只 Native）
+### D2 — ToolCall 双策略（v1.0 Native + Prompted）
 
 | 策略 | 适用 | 复杂度 |
 |------|------|--------|
-| Native | Ollama/Anthropic/OpenAI 自带 | 低（已实现） |
-| Grammar | llama.cpp GBNF | 中 |
-| Prompted | 小模型兜底（`<tool_call>{...}</tool_call>` regex） | 高 |
+| Native | Ollama/Anthropic/OpenAI | 低（已实现） |
+| Prompted | 小模型（无 tool_call） | 中（已实现 v1.0.5） |
+| Grammar | llama.cpp GBNF | 中（推迟 v1.0.6） |
 
-v1.0 再加 Grammar / Prompted。
+### D3 — 渐进式交付
 
-### D3 — v0.1 范围最小化
+- v0.1 tracer bullet → v0.2 自举 → v0.3 配置化权限 → v0.4 TUI → v0.5 持久化 → v1.0 完整
+- 每次 1-2 周，最小可用单元
+- 始终保持 main 可跑 + 100% 测试
 
-Tracer bullet ≠ 完整产品。2-3 周完成，81 测试全过，端到端可演示。
-进入 v0.2 才重新评估。v0.5 走通后进入 v1.0。
+### D4 — 自我引导为核心
 
-### D4 — 自我引导为差异化核心
+`AGENTS.md` / `README §当前状态` / 测试当文档 / 错误回灌 / Tool 接口统一 = 让模型能自举。
 
-AcornCode 的核心价值 = 让模型自己写新工具迭代。`AGENTS.md` / `README.md §当前状态` / 测试作为文档 / 错误回灌 / 工具接口统一 = 关键支撑。
-
-## 11. 依赖完整图
+## 13. 依赖完整图（v1.0）
 
 ```
 acorncode (Go 1.25)
@@ -310,4 +301,4 @@ acorncode (Go 1.25)
 └── modernc.org/sqlite v1.52.0                 // 纯 Go SQLite（无 CGo）
 ```
 
-indirect deps：bubbletea/lipgloss 拉 ~15 个 small libs（term / ansi / cellbuf / 等）。
+indirect deps：~20 个 small libs（term / ansi / cellbuf / golang.org/x/* 等）。

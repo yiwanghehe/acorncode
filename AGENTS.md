@@ -1,6 +1,8 @@
 # AcornCode — AI Agent 工作约定
 
 > 必读。新加 tool、发现新坑、改动代码风格，**立即**更新本文件。
+>
+> 当前 v1.0：6 个 tool + 4 依赖 + 227 测试。详见 [README.md](README.md) §已实现。
 
 ## 1. 硬规则
 
@@ -69,8 +71,8 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 ## 4. 跑命令
 
 ```bash
-make test              # 全部（~5 秒，185 测试）
-make test-llm          # LLM 客户端（10 测试）
+make test              # 全部（~5 秒，227 测试）
+make test-llm          # LLM 客户端（10 + 7 anthropic = 17 测试）
 make test-tool         # 工具（22+12+16+17+18+19+2 = 106 测试）
 make test-agent        # Agent 集成（5 测试）
 make vet               # go vet
