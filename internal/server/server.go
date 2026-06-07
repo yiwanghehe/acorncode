@@ -22,8 +22,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -145,14 +147,190 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("OK\n"))
 }
 
-// handleSessions 路由 /v1/sessions（v1.1.2 实现）
+// handleSessions 路由 /v1/sessions
+//
+//	GET  /v1/sessions        → 列表
+//	POST /v1/sessions        → 创建（body 可选 {title, directory}）
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented yet (v1.1.2)", http.StatusNotImplemented)
+	switch r.Method {
+	case http.MethodGet:
+		s.listSessions(w, r)
+	case http.MethodPost:
+		s.createSession(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
-// handleSessionByID 路由 /v1/sessions/{id}/*（v1.1.2 实现）
+// handleSessionByID 路由 /v1/sessions/{id}/*
+//
+//	GET  /v1/sessions/{id}              → 详情
+//	POST /v1/sessions/{id}/chat         → 续聊（SSE 流）
 func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented yet (v1.1.2)", http.StatusNotImplemented)
+	// 解析 path
+	// /v1/sessions/{id}/chat
+	// /v1/sessions/{id}
+	path := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 1 || parts[0] == "" {
+		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+	sessID := parts[0]
+
+	// 验证 session 存在
+	if _, err := s.cfg.Store.GetSession(r.Context(), sessID); err != nil {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{
+			"error":      "session not found",
+			"session_id": sessID,
+		})
+		return
+	}
+
+	switch {
+	case len(parts) == 1 && r.Method == http.MethodGet:
+		s.getSession(w, r, sessID)
+	case len(parts) == 2 && parts[1] == "chat" && r.Method == http.MethodPost:
+		s.handleChatByID(w, r, sessID)
+	default:
+		http.Error(w, "not found", http.StatusNotFound)
+	}
+}
+
+// CreateSessionRequest POST /v1/sessions 的入参
+type CreateSessionRequest struct {
+	Title     string `json:"title,omitempty"`
+	Directory string `json:"directory,omitempty"`
+}
+
+// SessionInfo 是返回的 session 元信息
+type SessionInfo struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Directory string `json:"directory"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
+	var req CreateSessionRequest
+	if r.ContentLength > 0 {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	sessID := "sess_" + randomID()
+	cwd, _ := os.Getwd()
+	if req.Directory == "" {
+		req.Directory = cwd
+	}
+	now := time.Now()
+	sess := &session.Session{
+		ID:        sessID,
+		Title:     req.Title,
+		Directory: req.Directory,
+		Agent:     "build",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.cfg.Store.CreateSession(r.Context(), sess); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	s.writeJSON(w, http.StatusCreated, SessionInfo{
+		ID:        sess.ID,
+		Title:     sess.Title,
+		Directory: sess.Directory,
+		CreatedAt: sess.CreatedAt.Unix(),
+		UpdatedAt: sess.UpdatedAt.Unix(),
+	})
+}
+
+func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
+	// SQLiteStore 用 ListSessions 返 []*Session；v1.1.2 简化只返元信息
+	type storeLister interface {
+		ListSessions(ctx context.Context) ([]*session.Session, error)
+	}
+	sl, ok := s.cfg.Store.(storeLister)
+	if !ok {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "store 不支持 ListSessions",
+		})
+		return
+	}
+
+	sessions, err := sl.ListSessions(r.Context())
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	out := make([]SessionInfo, 0, len(sessions))
+	for _, sess := range sessions {
+		out = append(out, SessionInfo{
+			ID:        sess.ID,
+			Title:     sess.Title,
+			Directory: sess.Directory,
+			CreatedAt: sess.CreatedAt.Unix(),
+			UpdatedAt: sess.UpdatedAt.Unix(),
+		})
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"sessions": out,
+		"count":    len(out),
+	})
+}
+
+func (s *Server) getSession(w http.ResponseWriter, r *http.Request, sessID string) {
+	sess, err := s.cfg.Store.GetSession(r.Context(), sessID)
+	if err != nil {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, SessionInfo{
+		ID:        sess.ID,
+		Title:     sess.Title,
+		Directory: sess.Directory,
+		CreatedAt: sess.CreatedAt.Unix(),
+		UpdatedAt: sess.UpdatedAt.Unix(),
+	})
+}
+
+// handleChatByID 处理 /v1/sessions/{id}/chat
+//
+// 复用 handleChat 的逻辑（session_id 来自 path）
+func (s *Server) handleChatByID(w http.ResponseWriter, r *http.Request, sessID string) {
+	// 复用 handleChat 但强制 session_id = sessID
+	// 简单做法：解析 body，把 session_id 强制覆盖
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		http.Error(w, "message 不能为空", http.StatusBadRequest)
+		return
+	}
+	// 强制 session_id
+	req.SessionID = sessID
+	// 替换 body 里的 session_id（虽然 handler 不会读它，但保险）
+	body, _ := json.Marshal(req)
+	r.Body = io.NopCloser(strings.NewReader(string(body)))
+	r.ContentLength = int64(len(body))
+
+	s.handleChat(w, r)
+}
+
+// writeJSON 写 JSON 响应
+func (s *Server) writeJSON(w http.ResponseWriter, status int, data any) {
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 // ChatRequest 是 /v1/chat 的入参
@@ -199,11 +377,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
-	if err := s.cfg.Store.CreateSession(r.Context(), sess); err != nil {
-		// 已存在也 OK（重复 session_id）
-		if !strings.Contains(err.Error(), "已存在") {
-			s.writeSSEError(w, flusher, "create session: "+err.Error())
-			return
+	// v1.1.2：by-ID 路径已验证 session 存在；这里也再查一次（兼容 /v1/chat 直调）
+	// 不存在才 create，避免 UNIQUE constraint
+	if _, getErr := s.cfg.Store.GetSession(r.Context(), sessID); getErr != nil {
+		if createErr := s.cfg.Store.CreateSession(r.Context(), sess); createErr != nil {
+			if !strings.Contains(createErr.Error(), "已存在") &&
+				!strings.Contains(createErr.Error(), "UNIQUE constraint") {
+				s.writeSSEError(w, flusher, "create session: "+createErr.Error())
+				return
+			}
 		}
 	}
 
