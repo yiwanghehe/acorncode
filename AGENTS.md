@@ -69,9 +69,9 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 ## 4. 跑命令
 
 ```bash
-make test              # 全部（~5 秒，81 测试）
+make test              # 全部（~5 秒，115 测试）
 make test-llm          # LLM 客户端（10 测试）
-make test-tool         # 工具（22+12+16+2 = 52 测试）
+make test-tool         # 工具（22+12+16+17+18+2 = 87 测试）
 make test-agent        # Agent 集成（7 测试）
 make vet               # go vet
 make fmt-check         # gofmt 检查

@@ -2,6 +2,21 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-06
+
+### Grep + Glob（首次自举成功）
+
+v0.1 基础之上加 2 个新 tool，**由模型用 AcornCode 自己写**（README §自举开发的首次完整实践）。
+
+**新增**：
+- **grep** tool（17 测试）：内容搜索，path/pattern/include/ignore_case/line_numbers/max_results；跳过 .git/node_modules/二进制
+- **glob** tool（18 测试）：文件匹配，pattern/path/type/max_results；自实现 `*` `**` `?` `[abc]`，0 依赖
+
+**Bug fix（顺手）**：
+- `.gitignore` 的 `acorn` 行误把 `cmd/acorn/main.go` 也忽略了（v0.1 commit 缺入口文件）→ 改成 `/acorn` 锚定根
+
+**总计**：115 测试，< 5 秒。
+
 ## [0.1.0] - 2026-06
 
 ### Tracer Bullet 首发
@@ -21,8 +36,9 @@
 ## [Unreleased]
 
 ### 计划
-- v0.2：Bubble Tea TUI + SQLite 持久化
-- v0.3：Grep / Glob / WebFetch tools + Session-level allow
-- v1.0：Grammar/Prompted toolcall + Anthropic Provider + Compaction
+- v0.3：WebFetch tool + Session-level allow
+- v1.0：Bubble Tea TUI + SQLite 持久化
+- v1.x：Grammar/Prompted toolcall + Anthropic Provider + Compaction
 
-[0.1.0]: https://github.com/yourname/acorncode/releases/tag/v0.1.0
+[0.2.0]: https://github.com/yiwanghehe/acorncode/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/yiwanghehe/acorncode/releases/tag/v0.1.0

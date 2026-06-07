@@ -60,17 +60,19 @@ make e2e               # 端到端（需本地 ollama）
 | **read** tool | `internal/tool/read.go` | 22 测试 |
 | **edit** tool | `internal/tool/edit.go` | 12 测试 |
 | **bash** tool | `internal/tool/bash.go` | 16 测试 |
+| **grep** tool | `internal/tool/grep.go` | 17 测试 |
+| **glob** tool | `internal/tool/glob.go` | 18 测试 |
 | In-Memory Store | `internal/session/memstore.go` | 7 测试 |
 | Bus（6 事件） | `internal/bus/event.go` | - |
 | Permission Broker | `internal/permission/broker.go` | 始终允许 |
 | AGENTS.md Loader | `internal/instruction/loader.go` | - |
 | CLI REPL | `cmd/acorn/main.go` | - |
 
-**总计**：81 测试，< 5 秒。
+**总计**：115 测试，< 5 秒。
 
 ## 当前状态
 
-**v0.1 Tracer Bullet** — 端到端可用，CLI 跑得起来，模型能用 read/edit/bash 三个 tool 完成简单任务。
+**v0.2 Grep+Glob** — 5 个 tool（read/edit/bash/grep/glob），v0.1 Tracer Bullet 基础之上加了内容搜索和文件匹配，验证自举开发流程。
 
 ### 限制
 
@@ -96,7 +98,7 @@ make e2e               # 端到端（需本地 ollama）
 
 ## 自举开发
 
-AcornCode 的核心差异化 = **让模型自己写新工具**。详见 [docs/architecture.md §6](docs/architecture.md#6-自举开发模式)。
+AcornCode 的核心差异化 = **让模型自己写新工具**。Grep + Glob 是首次自举成功案例：模型按 `read → 写 → 测试 → 改 AGENTS` 的流程在 v0.1 上加出新 tool，零人工干预。详见 [docs/architecture.md §6](docs/architecture.md#6-自举开发模式)。
 
 ```
 人: "加 Grep 工具，参考 Read"

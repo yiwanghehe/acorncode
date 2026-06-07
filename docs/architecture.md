@@ -171,13 +171,15 @@ v0.1 实现：`MemoryStore`（in-memory，append-only + snapshot 读）。v0.2 �
 
 `Errored` 状态记到 session，UI 显示给用户。
 
-## 5. 三 Tool 实现
+## 5. Tool 实现
 
 | Tool | 文件 | 测试 | 关键设计 |
 |------|------|------|----------|
-| read | `internal/tool/read.go` | 22 | 路径 normalize（`tc.Cwd` base） + JSON schema 验证 + 行号偏移 + ctx 取消 |
+| read | `internal/tool/read.go` | 22 | 路径 normalize + JSON schema 验证 + 行号偏移 + ctx 取消 |
 | edit | `internal/tool/edit.go` | 12 | 字符串替换 + 原子写 + 模糊匹配（old_text 缩进不一致也能改） |
 | bash | `internal/tool/bash.go` | 16 | 30s 默认 timeout + 输出截断（头尾各半，50KB 总） + **非零退出仍 success**（让模型看 stderr 修复） |
+| grep | `internal/tool/grep.go` | 17 | path/pattern/include/ignore_case/line_numbers/max_results；跳过重目录 + 二进制；输出 `path\tline:content` |
+| glob | `internal/tool/glob.go` | 18 | 自实现 `*` `**` `?` `[abc]`（0 依赖）；type 过滤 file/dir/any |
 
 所有 tool 的 `Execute()` 第一步都是路径 normalize：
 
