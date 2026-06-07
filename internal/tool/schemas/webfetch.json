@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "url":       {"type": "string", "format": "uri", "description": "完整 URL（http/https）"},
+    "method":    {"type": "string", "enum": ["GET", "POST", "HEAD"], "default": "GET", "description": "HTTP 方法"},
+    "headers":   {"type": "object", "description": "自定义请求头（key: value）", "additionalProperties": {"type": "string"}},
+    "body":      {"type": "string", "description": "POST 请求体（可选）"},
+    "max_size":  {"type": "integer", "default": 1048576, "minimum": 1, "description": "最大返回字节数（默认 1MB）"},
+    "timeout":   {"type": "integer", "default": 30, "minimum": 1, "description": "超时秒数（默认 30）"}
+  },
+  "required": ["url"],
+  "additionalProperties": false
+}

@@ -47,11 +47,11 @@ func (b *Broker) SessionApprove(tool, pattern string) {
 
 // Ask 检查权限：
 //
-//	1. 找匹配 rule（tool + pattern）
-//	2. action=allow → nil
-//	3. action=deny  → ErrDenied
-//	4. action=ask   → v0.3 默认 allow + slog.Warn；v0.4 TUI 弹窗
-//	5. 无 rule      → 检查 session allow，有则 nil；无则 nil（兼容 v0.1）
+//  1. 找匹配 rule（tool + pattern）
+//  2. action=allow → nil
+//  3. action=deny  → ErrDenied
+//  4. action=ask   → v0.3 默认 allow + slog.Warn；v0.4 TUI 弹窗
+//  5. 无 rule      → 检查 session allow，有则 nil；无则 nil（兼容 v0.1）
 //
 // pattern == "" → 只匹配 tool
 func (b *Broker) Ask(ctx context.Context, req Request) error {

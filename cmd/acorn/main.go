@@ -60,6 +60,7 @@ func run(modelName string) error {
 	tools.RegisterBash(cwd)
 	tools.RegisterGrep(cwd)
 	tools.RegisterGlob(cwd)
+	tools.RegisterWebFetch()
 
 	// 4. Permission broker（v0.3 加载 acorncode.json 规则）
 	broker := permission.NewBroker(nil)
@@ -113,7 +114,7 @@ func run(modelName string) error {
 	// 9. REPL
 	fmt.Printf("AcornCode v0.3 (model: %s)\n", modelName)
 	fmt.Printf("Session: %s\n", sess.ID)
-	fmt.Printf("Tools: read, edit, bash, grep, glob\n")
+	fmt.Printf("Tools: read, edit, bash, grep, glob, webfetch\n")
 	fmt.Printf("输入你的消息（'exit' 退出）:\n\n")
 
 	scanner := bufio.NewScanner(os.Stdin)
