@@ -1,10 +1,10 @@
 # AcornCode
 
-> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.0**
+> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.1**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/)
-[![Tests 227](https://img.shields.io/badge/tests-227%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
+[![Tests 247](https://img.shields.io/badge/tests-247%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
 
 AcornCode 是一个**纯 Go 原生**的 coding agent，类似 [opencode](https://github.com/sst/opencode) 但做了关键简化：
 
@@ -12,11 +12,11 @@ AcornCode 是一个**纯 Go 原生**的 coding agent，类似 [opencode](https:/
 |------|----------|---------------|
 | 运行时 | Node.js + Deno | **单二进制，4 依赖** |
 | LLM | Anthropic/GPT | **本地小模型优先**（7B 跑得动） |
-| 工具调用 | 仅 Native | **Native + Prompted** |
+| 工具调用 | 仅 Native | **Native + Prompted + Grammar** |
 | 持久化 | Drizzle + SQLite | SQLite（modernc，纯 Go） |
 | TUI | Ink | Bubble Tea |
-| Permission | 隐式 | 配置文件 + 弹窗 |
-| HTTP API | 有 | **v1.0 有** |
+| Permission | 隐式 | **配置文件 + 弹窗** |
+| HTTP API | 有 | **Bearer 鉴权 + 多 session** |
 
 **TL;DR**：能跑 7B 模型做真活，能让模型自己写新工具自举迭代。
 
@@ -43,7 +43,7 @@ go build -o acorn ./cmd/acorn
 # TUI 模式（默认）
 ./acorn
 
-# HTTP server 模式（CI / headless）
+# HTTP server 模式（CI / headless / 远程）
 ./acorn --server=:8080
 
 # 用 Anthropic
@@ -51,6 +51,13 @@ go build -o acorn ./cmd/acorn
 
 # 小模型用 Prompted toolcall 策略
 ./acorn --toolcall=prompted
+
+# 启鉴权（v1.1.1）
+./acorn --server=:8080 --api-key=secret
+# 也可：export ACORN_API_KEY=secret
+
+# Grammar 策略（v1.0.6，小模型严格 JSON Schema）
+./acorn --toolcall=grammar
 ```
 
 ### 测试
@@ -64,7 +71,7 @@ make ci                # fmt + vet + test
 make e2e               # 端到端（需本地 ollama）
 ```
 
-## 已实现（v1.0）
+## 已实现（v1.1）
 
 | 模块 | 文件 | 测试 |
 |------|------|------|
@@ -72,6 +79,7 @@ make e2e               # 端到端（需本地 ollama）
 | **Anthropic Provider**（v1.0.2） | `internal/llm/anthropic.go` | 7 |
 | **Native toolcall** 策略 | `internal/toolcall/native.go` | 7 |
 | **Prompted toolcall** 策略（v1.0.5） | `internal/toolcall/prompted.go` | 8 |
+| **Grammar toolcall** 策略（v1.0.6） | `internal/toolcall/grammar.go` | 9 |
 | Agent Loop（8 状态 + 3 熔断） | `internal/agent/loop.go` | 5 集成 |
 | **Compaction**（v1.0.3） | `internal/compaction/simple.go` | 6 |
 | **Permission ask 弹窗**（v1.0.1） | `internal/permission/broker.go` | 22 |
@@ -84,47 +92,56 @@ make e2e               # 端到端（需本地 ollama）
 | **SQLiteStore** | `internal/session/sqlitestore.go` | 19 |
 | Bus（6 事件，5 消费） | `internal/bus/event.go` | - |
 | AGENTS.md Loader | `internal/instruction/loader.go` | - |
-| **Bubble Tea TUI**（4 topic 订阅） | `internal/tui/model.go` | 28 |
-| **HTTP/SSE Server**（v1.0.4） | `internal/server/server.go` | 6 |
-| CLI（TTY 检测 + 5 flag） | `cmd/acorn/main.go` | 8 |
+| **Bubble Tea TUI**（5 topic 订阅） | `internal/tui/model.go` | 28 |
+| **HTTP/SSE Server + Bearer 鉴权 + 多 session**（v1.1） | `internal/server/server.go` | 17 |
+| CLI（TTY 检测 + 6 flag） | `cmd/acorn/main.go` | 11 |
 
-**总计**：**227 测试**，< 5 秒。**4 第三方依赖**。
+**总计**：**247 测试**，< 5 秒。**4 第三方依赖**。
 
 ## 当前状态
 
-**v1.0.0 完整版** — 6 个 tool + TUI + SQLite + 多 provider + 多 toolcall 策略 + HTTP API + Permission 弹窗 + Compaction。
+**v1.1.0 完整版** — 6 个 tool + TUI + SQLite + 多 provider + 三 toolcall 策略 + HTTP API（鉴权 + 多 session）+ Permission 弹窗 + Compaction。
 
 ### CLI 完整
 
 ```
 acorn [model]
   --provider=NAME        ollama | anthropic（默认 ollama）
-  --toolcall=NAME        native | prompted（默认 native）
-  --server=ADDR          启 HTTP server（v1.0.4；如 ":8080"）
+  --toolcall=NAME        native | prompted | grammar（默认 native）
+  --server=ADDR          启 HTTP server（如 ":8080"）
+  --api-key=KEY          v1.1.1：HTTP Bearer 鉴权（也读 ACORN_API_KEY env）
   --db=path              SQLite 路径（默认 .acorncode.db）
 ```
 
-### HTTP API（v1.0.4）
+### HTTP API（v1.1）
 
 ```bash
-# 起 server
-./acorn --server=:8080
+# 起 server（带鉴权）
+./acorn --server=:8080 --api-key=secret
 
-# 发请求
-curl -X POST http://localhost:8080/v1/chat \
+# 1. 创建 session
+curl -X POST http://localhost:8080/v1/sessions \
+  -H 'Authorization: Bearer secret' \
   -H 'Content-Type: application/json' \
-  -d '{"message": "list Go files"}'
+  -d '{"title": "my session"}'
+# → {"id": "sess_xxx", ...}
 
-# 收 SSE 流
-# event: session
-# data: {"session_id": "sess_xxx"}
-#
-# event: text
-# data: {"text": "I'll grep..."}
-#
-# event: finish
-# data: {"reason": "stop"}
+# 2. 列出所有 session
+curl http://localhost:8080/v1/sessions -H 'Authorization: Bearer secret'
+# → {"sessions": [...], "count": 3}
+
+# 3. 取 session 详情
+curl http://localhost:8080/v1/sessions/sess_xxx -H 'Authorization: Bearer secret'
+
+# 4. 续聊（多轮）
+curl -X POST http://localhost:8080/v1/sessions/sess_xxx/chat \
+  -H 'Authorization: Bearer secret' \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "继续"}'
+# → SSE 流（同 /v1/chat，向后兼容）
 ```
+
+**不鉴权模式**：省略 `--api-key` / `ACORN_API_KEY`，server 开放（dev 用）。
 
 ### 配置文件 `acorncode.json`
 
@@ -146,18 +163,20 @@ curl -X POST http://localhost:8080/v1/chat \
 
 ### 限制
 
-- Permission ask 在 HTTP server 模式默认 allow（headless 无 TUI）；需用 `allow` / `deny` rule
+- TUI 模式必须从 TTY 跑（CI 用 server 模式）
+- HTTP server 模式 Permission ask 默认 allow（headless 无 TUI）
 - WebFetch 默认禁私有 IP（含 AWS metadata 169.254/16）
 - Windows bash timeout 测试跳过
 
 ## 关键设计决策
 
-完整理由见 [docs/architecture.md](docs/architecture.md)。核心四点：
+完整理由见 [docs/architecture.md](docs/architecture.md)。核心五点：
 
 1. **Go 原生 + 4 依赖**：单二进制 ~10MB；模型学 1 个 stdlib + 4 API
-2. **ToolCall 双策略**（v1.0 Native + Prompted）：覆盖有/无原生 tool_call 能力的模型
+2. **ToolCall 三策略**（v1.0 Native + Prompted + Grammar）：覆盖有/无原生 tool_call 的模型
 3. **Compaction 自动化**：长 session 自动摘要（v1.0.3）
-4. **v0.1 范围最小化**：Tracer bullet → v1.0 完整
+4. **HTTP API + 鉴权 + 多 session**（v1.1）：可上生产
+5. **v0.1 范围最小化**：Tracer bullet → v1.0 完整 → v1.1 可用
 
 ## 自举开发
 

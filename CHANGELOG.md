@@ -2,6 +2,33 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.1.0] - 2026-06
+
+### HTTP 鉴权 + 多 session API
+
+v1.0 完整版上加 2 个能力，让 server 模式可上生产。
+
+**新增**：
+
+- **v1.1.1 HTTP Bearer 鉴权**：`--api-key=KEY` / `ACORN_API_KEY` env；设了就要 `Authorization: Bearer <key>`，否则 401。`/healthz` 永远开放（k8s liveness）
+- **v1.1.2 Multi-session API**：
+  - `POST /v1/sessions` → 创建（返 session_id）
+  - `GET /v1/sessions` → 列表
+  - `GET /v1/sessions/{id}` → 详情
+  - `POST /v1/sessions/{id}/chat` → 续聊（多轮对话）
+
+**向后兼容**：原 `/v1/chat` 仍可用（自动创建 session），不破现有客户端。
+
+**CLI flags**（v1.1 完整）：
+- `--provider=ollama|anthropic`
+- `--toolcall=native|prompted|grammar`
+- `--server=:8080`
+- `--api-key=KEY`（v1.1.1）
+- `--db=path`
+- `[model]`
+
+**总计**：247 测试，< 5 秒。
+
 ## [1.0.0] - 2026-06
 
 ### 🎉 v1.0 完整版
@@ -10,35 +37,20 @@
 
 **新增**：
 
-- **v1.0.1 Permission ask 弹窗**：Broker.Ask(rule=ask) 真阻塞（60s 超时默认 deny），TUI 弹窗 3 选项（Allow / Always / Deny），左/右循环
-- **v1.0.2 Anthropic Provider**：原生 Anthropic Messages API + SSE 解析 + tool schema 转换（OpenAI function → Anthropic tools），0 依赖
-- **v1.0.3 Compaction**：SimpleCompactor 调 LLM 摘要老消息（保留最近 6 条），失败返原 history
-- **v1.0.4 HTTP/SSE API**：`acorn --server=:8080` 起 HTTP server，POST /v1/chat 返 SSE 流，CI / headless 模式
-- **v1.0.5 Prompted toolcall**：解析 `<tool_call>{...}</tool_call>` 文本块，给不支持原生 tool_call 的小模型用
+- **v1.0.1 Permission ask 弹窗**
+- **v1.0.2 Anthropic Provider**
+- **v1.0.3 Compaction**
+- **v1.0.4 HTTP/SSE API**
+- **v1.0.5 Prompted toolcall**
 
-**CLI flags**（v1.0 完整）：
-- `--provider=ollama|anthropic`（默认 ollama）
-- `--toolcall=native|prompted`（默认 native）
-- `--server=:8080`（v1.0.4；启 HTTP server）
-- `--db=path`（SQLite 路径，默认 `.acorncode.db`）
-- `[model]`（默认 qwen2.5-coder:7b）
+**总计**：227 测试。
 
-**总计**：227 测试，< 5 秒。**4 第三方依赖**：bubbletea / lipgloss / modernc-sqlite / sqlx。
+## [0.5.x] - 2026-06
 
-## [0.5.1] - 2026-06
+### 整合 + Persistence
 
-### 整合：TUI 多 topic 订阅 + TTY 检测
-
-v0.5 端到端链路缕清 + 文档同步。
-
-**修复**：
-- TUI 订阅 4 个 topic（之前只听 `part.delta`）
-- TTY 检测（无 TTY 返清晰错误）
-- main.go 集成测试
-
-## [0.5.0] - 2026-06
-
-### SQLite 持久化
+- v0.5.1：TUI 多 topic 订阅 + TTY 检测
+- v0.5.0：SQLite 持久化
 
 ## [0.4.0] - 2026-06
 
@@ -58,11 +70,11 @@ v0.5 端到端链路缕清 + 文档同步。
 
 ## 计划 (v1.x)
 
-- v1.0.6：Grammar toolcall 策略（GBNF 规则生成）
-- v1.1：HTTP/SSE 鉴权（API key）+ 多 session API
 - v1.2：MCP stdio Client（让模型调外部工具）
+- v1.3：Grammar GBNF 完整版（schema→GBNF 转换器）
 - v2：分布式部署
 
+[1.1.0]: https://github.com/yiwanghehe/acorncode/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/yiwanghehe/acorncode/releases/tag/v1.0.0
 [0.5.1]: https://github.com/yiwanghehe/acorncode/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/yiwanghehe/acorncode/compare/v0.4.0...v0.5.0
