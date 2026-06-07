@@ -1,10 +1,9 @@
-// AcornCode CLI 入口（tracer bullet 版本）
-// 用法：acorn
-// 跑一个交互式 REPL：用户输入 → Ollama → 调工具 → 输出到 stdout
+// AcornCode CLI 入口
+// 用法：acorn [model_name]
+//   跑 Bubble Tea TUI：用户输入 → Ollama → 调工具 → 流式渲染
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"acorncode/internal/agent"
 	"acorncode/internal/bus"
@@ -21,6 +22,7 @@ import (
 	"acorncode/internal/session"
 	"acorncode/internal/tool"
 	"acorncode/internal/toolcall"
+	"acorncode/internal/tui"
 )
 
 func main() {
@@ -106,88 +108,18 @@ func run(modelName string) error {
 	}
 	loop := agent.NewLoop(sess.ID, loopCfg, store, eventBus, provider, strategy, tools, broker, loader)
 
-	// 8. 启动事件桥接：把 Bus 事件转 stdout
-	bridgeDone := make(chan struct{})
-	go bridgeBusToStdout(ctx, eventBus, sess.ID, bridgeDone)
-	defer func() { <-bridgeDone }()
+	// 8. 启动 Bubble Tea TUI
+	model := tui.NewModel(tui.Config{
+		SessionID: sess.ID,
+		ModelName: modelName,
+		Bus:       eventBus,
+		Loop:      loop,
+		Ctx:       ctx,
+	})
 
-	// 9. REPL
-	fmt.Printf("AcornCode v0.3 (model: %s)\n", modelName)
-	fmt.Printf("Session: %s\n", sess.ID)
-	fmt.Printf("Tools: read, edit, bash, grep, glob, webfetch\n")
-	fmt.Printf("输入你的消息（'exit' 退出）:\n\n")
-
-	scanner := bufio.NewScanner(os.Stdin)
-	for {
-		fmt.Print("> ")
-		if !scanner.Scan() {
-			break
-		}
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		if line == "exit" || line == "quit" {
-			break
-		}
-		if line == "/session" {
-			fmt.Printf("Session: %s\n", sess.ID)
-			continue
-		}
-
-		turnCtx, turnCancel := context.WithTimeout(ctx, 5*time.Minute)
-		err := loop.Run(turnCtx, &session.UserMessage{Text: line})
-		turnCancel()
-
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\n[loop error: %v]\n", err)
-		}
-		fmt.Println()
-	}
-
-	return nil
-}
-
-// bridgeBusToStdout 把 Bus 事件流输出到 stdout
-// 订阅 part.delta 实时输出文本，part.updated 标记工具完成
-func bridgeBusToStdout(ctx context.Context, b *bus.Bus, sessionID string, done chan<- struct{}) {
-	defer close(done)
-
-	ch, id := b.SubscribeID(bus.EventPartDelta)
-	defer b.Unsubscribe(bus.EventPartDelta, id)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev, ok := <-ch:
-			if !ok {
-				return
-			}
-			if ev.SessionID != sessionID {
-				continue
-			}
-			// 尝试从 Data 拿 Text
-			text := extractText(ev.Data)
-			if text != "" {
-				fmt.Print(text)
-			}
-		}
-	}
-}
-
-// extractText 尝试从 Part 数据里拿 Text 字段
-func extractText(data any) string {
-	switch v := data.(type) {
-	case *session.TextPart:
-		return v.Text
-	case session.TextPart:
-		return v.Text
-	case *session.ToolPart:
-		// ToolPart 进度用 title 字段
-		return ""
-	}
-	return ""
+	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	_, err := prog.Run()
+	return err
 }
 
 func envOr(key, def string) string {
