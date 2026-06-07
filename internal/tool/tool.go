@@ -86,6 +86,12 @@ func (r *Registry) RegisterBash(cwd string) *Bash {
 	return bash
 }
 
+func (r *Registry) RegisterGrep(cwd string) *Grep {
+	g := &Grep{Cwd: cwd}
+	r.Register(g)
+	return g
+}
+
 // PickForTurn 返回本轮工具子集。v0.1 简化：返回全部
 func (r *Registry) PickForTurn(agent string, budget int, userMsg string, recent []string) []Definition {
 	return r.Definitions()

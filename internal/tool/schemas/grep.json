@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "pattern":      {"type": "string", "description": "正则表达式（在文件内容中搜索）"},
+    "path":         {"type": "string", "description": "搜索根目录，默认当前目录"},
+    "include":      {"type": "string", "description": "文件名 glob 过滤（仅匹配 basename，如 *.go）"},
+    "ignore_case":  {"type": "boolean", "default": false, "description": "是否忽略大小写"},
+    "line_numbers": {"type": "boolean", "default": true, "description": "输出是否带行号"},
+    "max_results":  {"type": "integer", "default": 100, "minimum": 1, "description": "最多返回多少条匹配"}
+  },
+  "required": ["pattern"],
+  "additionalProperties": false
+}

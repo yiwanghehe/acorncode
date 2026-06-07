@@ -11,7 +11,7 @@
 /bin/
 /dist/
 /build/
-acorn
+/acorn
 acorn.exe
 
 # 测试覆盖
