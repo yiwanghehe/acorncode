@@ -29,29 +29,37 @@ import (
 )
 
 func main() {
-	modelName, dbPath := parseArgs(os.Args[1:])
+	modelName, dbPath, providerName := parseArgs(os.Args[1:])
 
-	if err := run(modelName, dbPath); err != nil {
+	if err := run(modelName, dbPath, providerName); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// parseArgs 解析 CLI 参数（提取出来便于测试）
-func parseArgs(args []string) (modelName, dbPath string) {
+// parseArgs 解析 CLI 参数
+//
+//	--db=path              SQLite db 路径（默认 .acorncode.db）
+//	--provider=NAME        provider 名（ollama | anthropic，默认 ollama）
+//	[model]                模型名（默认 qwen2.5-coder:7b）
+func parseArgs(args []string) (modelName, dbPath, providerName string) {
 	modelName = "qwen2.5-coder:7b"
 	dbPath = ".acorncode.db"
+	providerName = "ollama"
 	for _, arg := range args {
-		if strings.HasPrefix(arg, "--db=") {
+		switch {
+		case strings.HasPrefix(arg, "--db="):
 			dbPath = strings.TrimPrefix(arg, "--db=")
-		} else if !strings.HasPrefix(arg, "-") {
+		case strings.HasPrefix(arg, "--provider="):
+			providerName = strings.TrimPrefix(arg, "--provider=")
+		case !strings.HasPrefix(arg, "-"):
 			modelName = arg
 		}
 	}
 	return
 }
 
-func run(modelName, dbPath string) error {
+func run(modelName, dbPath, providerName string) error {
 	// 0. TTY 检测（v0.6 整合）：无 TTY 时 TUI 起不来，给清晰错误
 	if !isTTY() {
 		return fmt.Errorf("acorn 需要交互式 TTY（stdin 必须是 terminal）。\n" +
@@ -73,12 +81,29 @@ func run(modelName, dbPath string) error {
 
 	loader := instruction.NewLoader(".")
 
-	// 2. LLM provider
-	provider := llm.NewOllama(llm.OllamaConfig{
-		Endpoint: envOr("OLLAMA_ENDPOINT", "http://localhost:11434"),
-		Model:    modelName,
-		Timeout:  5 * time.Minute,
-	})
+	// 2. LLM provider（v1.0.2 起支持 ollama + anthropic）
+	var provider llm.Provider
+	providerID := "ollama"
+	switch providerName {
+	case "ollama", "":
+		provider = llm.NewOllama(llm.OllamaConfig{
+			Endpoint: envOr("OLLAMA_ENDPOINT", "http://localhost:11434"),
+			Model:    modelName,
+			Timeout:  5 * time.Minute,
+		})
+	case "anthropic":
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			return fmt.Errorf("anthropic provider 需 ANTHROPIC_API_KEY 环境变量")
+		}
+		provider = llm.NewAnthropic(llm.AnthropicConfig{
+			APIKey: apiKey,
+			Model:  modelName,
+		})
+		providerID = "anthropic"
+	default:
+		return fmt.Errorf("未知 provider: %s（支持 ollama / anthropic）", providerName)
+	}
 	strategy := toolcall.NewNative()
 
 	// 3. Tool registry
@@ -126,7 +151,7 @@ func run(modelName, dbPath string) error {
 	// 7. 创建 loop
 	loopCfg := agent.LoopConfig{
 		AgentName:    "build",
-		Model:        llm.Model{ID: modelName, ProviderID: "ollama"},
+		Model:        llm.Model{ID: modelName, ProviderID: providerID},
 		MaxTurns:     20,
 		MaxTokens:    32000,
 		MaxBashFails: 5,
