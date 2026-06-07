@@ -59,6 +59,7 @@ func run(modelName string) error {
 	tools.RegisterEdit(cwd)
 	tools.RegisterBash(cwd)
 	tools.RegisterGrep(cwd)
+	tools.RegisterGlob(cwd)
 
 	// 4. Permission broker（v0.1 始终允许）
 	broker := permission.NewBroker(nil)
@@ -105,7 +106,7 @@ func run(modelName string) error {
 	// 9. REPL
 	fmt.Printf("AcornCode v0.1 (model: %s)\n", modelName)
 	fmt.Printf("Session: %s\n", sess.ID)
-	fmt.Printf("Tools: read, edit, bash, grep\n")
+	fmt.Printf("Tools: read, edit, bash, grep, glob\n")
 	fmt.Printf("输入你的消息（'exit' 退出）:\n\n")
 
 	scanner := bufio.NewScanner(os.Stdin)

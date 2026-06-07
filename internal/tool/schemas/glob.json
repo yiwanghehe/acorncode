@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "pattern": {"type": "string", "description": "Glob 模式（支持 *, **, ?, [...]）"},
+    "path":    {"type": "string", "description": "搜索根目录，默认当前目录"},
+    "type":    {"type": "string", "enum": ["file", "dir", "any"], "default": "file", "description": "条目类型过滤"},
+    "max_results": {"type": "integer", "default": 100, "minimum": 1, "description": "最多返回多少条结果"}
+  },
+  "required": ["pattern"],
+  "additionalProperties": false
+}
