@@ -1,6 +1,7 @@
 // AcornCode CLI 入口
 // 用法：acorn [model_name]
-//   跑 Bubble Tea TUI：用户输入 → Ollama → 调工具 → 流式渲染
+//
+//	跑 Bubble Tea TUI：用户输入 → Ollama → 调工具 → 流式渲染
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 
 	"acorncode/internal/agent"
 	"acorncode/internal/bus"
@@ -27,17 +29,7 @@ import (
 )
 
 func main() {
-	// 解析 args（v0.1 简单版：第一个非 flag 参数是 model name；--db=path 指定 db）
-	modelName := "qwen2.5-coder:7b"
-	dbPath := ".acorncode.db" // v0.5 默认 SQLite 持久化
-
-	for _, arg := range os.Args[1:] {
-		if strings.HasPrefix(arg, "--db=") {
-			dbPath = strings.TrimPrefix(arg, "--db=")
-		} else if !strings.HasPrefix(arg, "-") {
-			modelName = arg
-		}
-	}
+	modelName, dbPath := parseArgs(os.Args[1:])
 
 	if err := run(modelName, dbPath); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
@@ -45,7 +37,27 @@ func main() {
 	}
 }
 
+// parseArgs 解析 CLI 参数（提取出来便于测试）
+func parseArgs(args []string) (modelName, dbPath string) {
+	modelName = "qwen2.5-coder:7b"
+	dbPath = ".acorncode.db"
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--db=") {
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		} else if !strings.HasPrefix(arg, "-") {
+			modelName = arg
+		}
+	}
+	return
+}
+
 func run(modelName, dbPath string) error {
+	// 0. TTY 检测（v0.6 整合）：无 TTY 时 TUI 起不来，给清晰错误
+	if !isTTY() {
+		return fmt.Errorf("acorn 需要交互式 TTY（stdin 必须是 terminal）。\n" +
+			"提示：直接跑 `./acorn`；CI 场景考虑用 v1 的 HTTP API")
+	}
+
 	// 1. 初始化基础设施
 	eventBus := bus.New()
 	defer eventBus.Close()
@@ -142,6 +154,11 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// isTTY 检查 stdin 是否是 TTY
+func isTTY() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // newShortID 生成 8 字符短 ID

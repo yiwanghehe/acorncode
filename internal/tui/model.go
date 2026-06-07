@@ -1,7 +1,10 @@
 // Package tui - Bubble Tea 终端 UI
 //
-// v0.4 简化版：scrollback 显示当前 turn 文本 + input box + status bar。
-// 详细设计见 docs/architecture.md §11.2（v0.4 实现 §11.2 简化子集）。
+// v0.4 起替代 stdout REPL。订阅 Bus 的 4 类事件：
+//   - part.delta      → 累积文本到中部正文
+//   - part.updated    → 工具开始/完成（状态栏显示 → tool_name）
+//   - agent.state.change → Loop 状态切换
+//   - error           → 错误显示
 package tui
 
 import (
@@ -30,18 +33,16 @@ type Config struct {
 type Model struct {
 	cfg Config
 
-	// Bus 订阅
-	busSubID int
-	busCh    <-chan bus.Event
+	// Bus 订阅（4 个 topic）
+	subs subscribes
 
 	// UI 状态
 	width    int
 	height   int
-	status   string // 顶部状态栏
-	text     strings.Builder // 当前 turn 累积文本
-	toolName string // 正在执行的 tool（"read" / "edit" 等）
-	input    string // input box 当前内容
-	inputOn  bool   // false = 禁用（loop 忙）
+	status   string
+	text     strings.Builder
+	input    string
+	inputOn  bool
 	quitting bool
 
 	// 样式
@@ -51,13 +52,20 @@ type Model struct {
 	inputStyle  lipgloss.Style
 }
 
+// subscribes 记录 4 个 topic 的 channel + id
+type subscribes struct {
+	partDelta   <-chan bus.Event
+	partUpdated <-chan bus.Event
+	stateChange <-chan bus.Event
+	errorEvent  <-chan bus.Event
+}
+
 // NewModel 构造 Model
 func NewModel(cfg Config) *Model {
 	return &Model{
-		cfg:       cfg,
-		busCh:     nil, // Init() 里订阅
-		status:    "Idle",
-		inputOn:   true,
+		cfg:     cfg,
+		status:  "Idle",
+		inputOn: true,
 		statusStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241")).
 			Bold(true),
@@ -70,20 +78,19 @@ func NewModel(cfg Config) *Model {
 	}
 }
 
-// Init 实现 tea.Model。订阅 bus
+// Init 实现 tea.Model。订阅 bus 4 个 topic
 func (m *Model) Init() tea.Cmd {
-	// 订阅 part.delta + part.updated + agent.state.change + error
-	ch, id := m.cfg.Bus.SubscribeID(bus.EventPartDelta)
-	m.busCh = ch
-	m.busSubID = id
+	m.subs.partDelta, _ = m.cfg.Bus.SubscribeID(bus.EventPartDelta)
+	m.subs.partUpdated, _ = m.cfg.Bus.SubscribeID(bus.EventPartUpdated)
+	m.subs.stateChange, _ = m.cfg.Bus.SubscribeID(bus.EventAgentStateChange)
+	m.subs.errorEvent, _ = m.cfg.Bus.SubscribeID(bus.EventError)
 
-	// 也订阅 state change + error
-	// 简化：一个订阅者订阅多 topic（bus 支持）
-	// 实际 bus.SubscribeID 是按 topic 单独订阅，v0.4 简化：只监听 part.delta
-	// state change 通过 WaitMsg 的方式轮询（v0.4 简化：忽略 state，只在 part.delta 更新文本）
-
+	// 启动 4 个 listener
 	return tea.Batch(
-		textMsg(m.cfg.Ctx, m.busCh), // 启动订阅监听
+		listenCmd(m.cfg.Ctx, m.subs.partDelta),
+		listenCmd(m.cfg.Ctx, m.subs.partUpdated),
+		listenCmd(m.cfg.Ctx, m.subs.stateChange),
+		listenCmd(m.cfg.Ctx, m.subs.errorEvent),
 	)
 }
 
@@ -96,13 +103,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// 全局快捷键
 		if msg.String() == "ctrl+c" {
 			m.quitting = true
 			return m, tea.Quit
 		}
 		if !m.inputOn {
-			// 循环忙时只接受 ctrl+c
 			return m, nil
 		}
 		switch msg.String() {
@@ -121,7 +126,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if text == "/clear" {
 				m.text.Reset()
-				m.status = "Idle"
+				m.setStatus("Idle")
 				return m, nil
 			}
 			if text == "/session" {
@@ -148,7 +153,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		default:
-			// 普通字符
 			if len(msg.String()) == 1 {
 				m.input += msg.String()
 			}
@@ -156,21 +160,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case busEventMsg:
-		// Bus 事件到达
 		ev := bus.Event(msg)
 		m.handleBusEvent(ev)
-		// 继续订阅
-		return m, textMsg(m.cfg.Ctx, m.busCh)
+		// 重启 listener（每个 channel 单独 re-issue）
+		return m, tea.Batch(
+			listenCmd(m.cfg.Ctx, m.subs.partDelta),
+			listenCmd(m.cfg.Ctx, m.subs.partUpdated),
+			listenCmd(m.cfg.Ctx, m.subs.stateChange),
+			listenCmd(m.cfg.Ctx, m.subs.errorEvent),
+		)
 
 	case loopDoneMsg:
-		// Loop 完成（成功或失败）
 		if msg.Err != nil {
 			m.setStatus(fmt.Sprintf("Error: %v", msg.Err))
 		} else {
 			m.setStatus("Idle")
 		}
 		m.inputOn = true
-		m.toolName = ""
 		return m, nil
 	}
 
@@ -183,25 +189,27 @@ func (m *Model) View() string {
 		return "Bye.\n"
 	}
 
+	divider := strings.Repeat("─", max(m.width, 20))
+
 	var sb strings.Builder
 	// 状态栏
-	status := m.statusStyle.Render(fmt.Sprintf("[%s] %s", m.cfg.ModelName, m.status))
-	if m.toolName != "" {
-		status += " " + m.toolStyle.Render("→ "+m.toolName)
-	}
-	sb.WriteString(status)
+	sb.WriteString(m.statusStyle.Render(fmt.Sprintf("[%s] %s", m.cfg.ModelName, m.status)))
 	sb.WriteString("\n")
-	sb.WriteString(strings.Repeat("─", max(m.width, 20)))
+	sb.WriteString(divider)
 	sb.WriteString("\n")
 
 	// 文本区
 	body := m.text.String()
 	if body == "" {
-		body = "(waiting for response...)"
+		if m.inputOn {
+			body = "(waiting for input...)"
+		} else {
+			body = "(thinking...)"
+		}
 	}
 	sb.WriteString(m.textStyle.Render(body))
 	sb.WriteString("\n")
-	sb.WriteString(strings.Repeat("─", max(m.width, 20)))
+	sb.WriteString(divider)
 	sb.WriteString("\n")
 
 	// Input
@@ -220,8 +228,8 @@ func (m *Model) View() string {
 // busEventMsg 把 bus.Event 包成 tea.Msg
 type busEventMsg bus.Event
 
-// textMsg 监听 bus channel 的 Cmd
-func textMsg(ctx context.Context, ch <-chan bus.Event) tea.Cmd {
+// listenCmd 监听 bus channel → tea.Msg
+func listenCmd(ctx context.Context, ch <-chan bus.Event) tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case <-ctx.Done():
@@ -240,7 +248,7 @@ type loopDoneMsg struct {
 	Err error
 }
 
-// runLoop 异步跑 loop，跑完返 loopDoneMsg
+// runLoop 异步跑 loop
 func (m *Model) runLoop(userText string) tea.Cmd {
 	return func() tea.Msg {
 		err := m.cfg.Loop.Run(m.cfg.Ctx, &session.UserMessage{Text: userText})
@@ -248,39 +256,68 @@ func (m *Model) runLoop(userText string) tea.Cmd {
 	}
 }
 
-// handleBusEvent 处理 bus 事件
+// handleBusEvent 处理 4 类 bus 事件
 func (m *Model) handleBusEvent(ev bus.Event) {
 	switch ev.Type {
 	case bus.EventPartDelta:
-		// 文本增量
 		if tp, ok := ev.Data.(*session.TextPart); ok {
 			m.text.WriteString(tp.Text)
 		} else if tp, ok := ev.Data.(session.TextPart); ok {
 			m.text.WriteString(tp.Text)
 		}
 		m.setStatus("Streaming")
+
 	case bus.EventPartUpdated:
-		// 工具完成
+		// 工具 part 状态变化（start / complete / error / reject）
 		if tp, ok := ev.Data.(*session.ToolPart); ok {
-			m.setStatus(fmt.Sprintf("Tool %s done", tp.ToolID))
-			m.toolName = ""
+			switch tp.State {
+			case session.ToolPending:
+				m.setStatus(fmt.Sprintf("→ %s", tp.ToolID))
+			case session.ToolRunning:
+				m.setStatus(fmt.Sprintf("Running %s", tp.ToolID))
+			case session.ToolComplete:
+				m.setStatus(fmt.Sprintf("✓ %s done", tp.ToolID))
+			case session.ToolErrored:
+				m.setStatus(fmt.Sprintf("✗ %s error: %s", tp.ToolID, tp.Error))
+			case session.ToolRejected:
+				m.setStatus(fmt.Sprintf("⊘ %s rejected: %s", tp.ToolID, tp.Error))
+			}
 		}
+
 	case bus.EventAgentStateChange:
-		// 状态变化
-		if s, ok := ev.Data.(string); ok {
-			m.setStatus(s)
+		// data 可能是 string（直接状态名）或 map（{from, to, event, ...}）
+		switch d := ev.Data.(type) {
+		case string:
+			m.setStatus(d)
+		case map[string]any:
+			if to, ok := d["to"].(string); ok {
+				m.setStatus(to)
+			} else if event, ok := d["event"].(string); ok {
+				m.setStatus(event)
+			}
 		}
+
 	case bus.EventError:
+		// data 通常是 map{err, fatal}
+		if data, ok := ev.Data.(map[string]any); ok {
+			if err, ok := data["err"].(string); ok {
+				fatal, _ := data["fatal"].(bool)
+				if fatal {
+					m.setStatus(fmt.Sprintf("FATAL: %s", err))
+				} else {
+					m.setStatus(fmt.Sprintf("Error: %s", err))
+				}
+				return
+			}
+		}
 		m.setStatus(fmt.Sprintf("Error: %v", ev.Data))
 	}
 }
 
-// setStatus 简洁包装
 func (m *Model) setStatus(s string) {
 	m.status = s
 }
 
-// max 避免内建冲突
 func max(a, b int) int {
 	if a > b {
 		return a

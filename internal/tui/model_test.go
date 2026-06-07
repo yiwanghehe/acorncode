@@ -167,26 +167,52 @@ func TestUpdate_BusEvent_TextDelta(t *testing.T) {
 	}
 }
 
-func TestUpdate_BusEvent_ToolUpdated(t *testing.T) {
+func TestUpdate_BusEvent_ToolUpdated_Complete(t *testing.T) {
 	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
-	m.toolName = "read"
 
 	ev := bus.Event{
 		Type:      bus.EventPartUpdated,
 		SessionID: "s1",
-		Data:      &session.ToolPart{ToolID: "read"},
+		Data:      &session.ToolPart{ToolID: "read", State: session.ToolComplete},
 	}
 	m.handleBusEvent(ev)
 
-	if m.toolName != "" {
-		t.Errorf("toolName = %q, 期望清空", m.toolName)
-	}
-	if m.status != "Tool read done" {
-		t.Errorf("status = %q, 期望 'Tool read done'", m.status)
+	if !strings.Contains(m.status, "read done") {
+		t.Errorf("status = %q, 期望含 'read done'", m.status)
 	}
 }
 
-func TestUpdate_BusEvent_StateChange(t *testing.T) {
+func TestUpdate_BusEvent_ToolUpdated_Pending(t *testing.T) {
+	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
+
+	ev := bus.Event{
+		Type:      bus.EventPartUpdated,
+		SessionID: "s1",
+		Data:      &session.ToolPart{ToolID: "bash", State: session.ToolPending},
+	}
+	m.handleBusEvent(ev)
+
+	if !strings.Contains(m.status, "bash") {
+		t.Errorf("status = %q, 期望含 'bash'", m.status)
+	}
+}
+
+func TestUpdate_BusEvent_ToolUpdated_Errored(t *testing.T) {
+	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
+
+	ev := bus.Event{
+		Type:      bus.EventPartUpdated,
+		SessionID: "s1",
+		Data:      &session.ToolPart{ToolID: "read", State: session.ToolErrored, Error: "file not found"},
+	}
+	m.handleBusEvent(ev)
+
+	if !strings.Contains(m.status, "error") {
+		t.Errorf("status = %q, 期望含 'error'", m.status)
+	}
+}
+
+func TestUpdate_BusEvent_StateChange_String(t *testing.T) {
 	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
 
 	ev := bus.Event{
@@ -198,6 +224,52 @@ func TestUpdate_BusEvent_StateChange(t *testing.T) {
 
 	if m.status != "ToolExec" {
 		t.Errorf("status = %q, 期望 ToolExec", m.status)
+	}
+}
+
+func TestUpdate_BusEvent_StateChange_Map(t *testing.T) {
+	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
+
+	ev := bus.Event{
+		Type:      bus.EventAgentStateChange,
+		SessionID: "s1",
+		Data:      map[string]any{"from": "Building", "to": "Streaming", "event": "finish"},
+	}
+	m.handleBusEvent(ev)
+
+	// to 优先于 event
+	if m.status != "Streaming" {
+		t.Errorf("status = %q, 期望 'Streaming'（to 字段优先）", m.status)
+	}
+}
+
+func TestUpdate_BusEvent_Error_Fatal(t *testing.T) {
+	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
+
+	ev := bus.Event{
+		Type:      bus.EventError,
+		SessionID: "s1",
+		Data:      map[string]any{"err": "boom", "fatal": true},
+	}
+	m.handleBusEvent(ev)
+
+	if !strings.Contains(m.status, "FATAL") {
+		t.Errorf("status = %q, 期望含 'FATAL'", m.status)
+	}
+}
+
+func TestUpdate_BusEvent_Error_NonFatal(t *testing.T) {
+	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
+
+	ev := bus.Event{
+		Type:      bus.EventError,
+		SessionID: "s1",
+		Data:      map[string]any{"err": "soft fail", "fatal": false},
+	}
+	m.handleBusEvent(ev)
+
+	if !strings.Contains(m.status, "Error") {
+		t.Errorf("status = %q, 期望含 'Error'", m.status)
 	}
 }
 

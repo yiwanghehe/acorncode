@@ -69,14 +69,14 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 ## 4. 跑命令
 
 ```bash
-make test              # 全部（~5 秒，168 测试）
+make test              # 全部（~5 秒，185 测试）
 make test-llm          # LLM 客户端（10 测试）
 make test-tool         # 工具（22+12+16+17+18+19+2 = 106 测试）
-make test-agent        # Agent 集成（7 测试）
+make test-agent        # Agent 集成（5 测试）
 make vet               # go vet
 make fmt-check         # gofmt 检查
 make ci                # fmt + vet + test 完整
-make e2e               # 端到端（需 ollama + qwen2.5-coder:7b）
+make e2e               # 端到端（需 ollama + qwen2.5-coder:7b，需 TTY）
 ```
 
 ## 5. 工作流

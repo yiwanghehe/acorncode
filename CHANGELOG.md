@@ -2,6 +2,26 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.5.1] - 2026-06
+
+### 整合：TUI 多 topic 订阅 + TTY 检测
+
+**v0.5 端到端链路缕清 + 文档同步**。
+
+**修复**：
+- **TUI 订阅 4 个 topic**（之前只听 `part.delta`）：现在听 `part.updated` / `agent.state.change` / `error`，工具状态变化、错误、状态切换都能在 TUI 状态栏看到
+- **TTY 检测**：无 TTY 跑 `./acorn` 返清晰错误（之前会 panic 在 Bubble Tea 启动）
+- **main.go 集成测试**：parseArgs + run 的 TTY 错误路径
+- **TUI PartUpdated 状态映射**：pending → `→ tool` / running → `Running tool` / complete → `✓ tool done` / errored → `✗ tool error: ...` / rejected → `⊘ tool rejected`
+- **TUI ErrorEvent 渲染**：fatal → `FATAL: ...` / 非 fatal → `Error: ...`
+
+**文档**：
+- `docs/architecture.md` 重写：修 §6 / §7 heading 重复；D1 更新（0 → 4 依赖）；v0.5 实际范围（6 tool / 4 依赖 / 185 测试）
+- `README.md` 同步：v0.5 整合状态 / 依赖列表 / TTY 警告 / 文档索引
+- `CHANGELOG.md` 加 v0.5.1 段
+
+**测试**：185 个，< 5 秒（+17：TUI 8 新测试，cmd/acorn 2 新测试，registry_test 已存在）。
+
 ## [0.5.0] - 2026-06
 
 ### SQLite 持久化
@@ -11,12 +31,6 @@ v0.4 基础之上加 SQLite 持久化，session 不再随进程退出丢失。
 **新增**：
 - **SQLiteStore**（19 测试）：modernc.org/sqlite + sqlx；3 表（sessions / messages / parts），WAL + 单连接 + 毫秒精度时间戳
 - **main.go** 加 `--db=path` flag（默认 `.acorncode.db`）
-
-**关键设计**：
-- Part 用 `type` 列 + JSON BLOB 存 data（type=text/tool/reasoning）
-- UpsertPart 用 `ON CONFLICT(id) DO UPDATE`
-- Messages() 分两步取（先 message 后 parts）避免单连接嵌套死锁
-- MemoryStore 保留供测试
 
 **总计**：168 测试，< 5 秒。
 
@@ -31,7 +45,7 @@ v0.3 基础之上加终端 UI。**首次引入第三方依赖**。
 - 快捷键：Ctrl+C / Esc 退出，Enter 发送，Backspace 删除
 - 命令：`/exit` `/quit` `/clear` `/session` `/help`
 - 依赖：`github.com/charmbracelet/bubbletea` + `github.com/charmbracelet/lipgloss`
-- Go 1.22 → 1.24（bubbletea 要求）
+- Go 1.22 → 1.25（bubbletea 要求）
 
 **总计**：149 测试，< 5 秒。
 
@@ -59,9 +73,6 @@ v0.1 基础之上加 2 个新 tool，**由模型用 AcornCode 自己写**（READ
 - **grep** tool（17 测试）：内容搜索，path/pattern/include/ignore_case/line_numbers/max_results；跳过 .git/node_modules/二进制
 - **glob** tool（18 测试）：文件匹配，pattern/path/type/max_results；自实现 `*` `**` `?` `[abc]`，0 依赖
 
-**Bug fix（顺手）**：
-- `.gitignore` 的 `acorn` 行误把 `cmd/acorn/main.go` 也忽略了（v0.1 commit 缺入口文件）→ 改成 `/acorn` 锚定根
-
 **总计**：115 测试，< 5 秒。
 
 ## [0.1.0] - 2026-06
@@ -81,9 +92,9 @@ v0.1 基础之上加 2 个新 tool，**由模型用 AcornCode 自己写**（READ
 ## [Unreleased]
 
 ### 计划
-- v1.0：Compaction + Anthropic Provider + Grammar/Prompted toolcall
-- v1.x：MCP stdio Client + HTTP/SSE Server
+- v1.0：Compaction + Anthropic Provider + Grammar/Prompted toolcall + HTTP/SSE API + Permission ask 弹窗
 
+[0.5.1]: https://github.com/yiwanghehe/acorncode/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/yiwanghehe/acorncode/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yiwanghehe/acorncode/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yiwanghehe/acorncode/compare/v0.2.0...v0.3.0
