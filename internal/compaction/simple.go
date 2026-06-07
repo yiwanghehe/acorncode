@@ -20,10 +20,10 @@ type Compactor interface {
 
 // SimpleCompactor 是基础实现：调 LLM 摘要
 type SimpleCompactor struct {
-	Provider  llm.Provider
-	Model     llm.Model
-	KeepRecent int   // 保留最近 N 条不压
-	MaxSummary int   // 摘要最大 token（粗估 4 字符 = 1 token）
+	Provider   llm.Provider
+	Model      llm.Model
+	KeepRecent int // 保留最近 N 条不压
+	MaxSummary int // 摘要最大 token（粗估 4 字符 = 1 token）
 }
 
 // summarizePrompt 调 LLM 摘要

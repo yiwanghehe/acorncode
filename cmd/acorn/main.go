@@ -23,6 +23,7 @@ import (
 	"acorncode/internal/instruction"
 	"acorncode/internal/llm"
 	"acorncode/internal/permission"
+	"acorncode/internal/server"
 	"acorncode/internal/session"
 	"acorncode/internal/tool"
 	"acorncode/internal/toolcall"
@@ -30,9 +31,9 @@ import (
 )
 
 func main() {
-	modelName, dbPath, providerName := parseArgs(os.Args[1:])
+	modelName, dbPath, providerName, serverAddr := parseArgs(os.Args[1:])
 
-	if err := run(modelName, dbPath, providerName); err != nil {
+	if err := run(modelName, dbPath, providerName, serverAddr); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
@@ -42,8 +43,9 @@ func main() {
 //
 //	--db=path              SQLite db 路径（默认 .acorncode.db）
 //	--provider=NAME        provider 名（ollama | anthropic，默认 ollama）
+//	--server=ADDR          启 HTTP server（v1.0.4；如 ":8080"），默认不起
 //	[model]                模型名（默认 qwen2.5-coder:7b）
-func parseArgs(args []string) (modelName, dbPath, providerName string) {
+func parseArgs(args []string) (modelName, dbPath, providerName, serverAddr string) {
 	modelName = "qwen2.5-coder:7b"
 	dbPath = ".acorncode.db"
 	providerName = "ollama"
@@ -53,6 +55,8 @@ func parseArgs(args []string) (modelName, dbPath, providerName string) {
 			dbPath = strings.TrimPrefix(arg, "--db=")
 		case strings.HasPrefix(arg, "--provider="):
 			providerName = strings.TrimPrefix(arg, "--provider=")
+		case strings.HasPrefix(arg, "--server="):
+			serverAddr = strings.TrimPrefix(arg, "--server=")
 		case !strings.HasPrefix(arg, "-"):
 			modelName = arg
 		}
@@ -60,11 +64,12 @@ func parseArgs(args []string) (modelName, dbPath, providerName string) {
 	return
 }
 
-func run(modelName, dbPath, providerName string) error {
+func run(modelName, dbPath, providerName, serverAddr string) error {
 	// 0. TTY 检测（v0.6 整合）：无 TTY 时 TUI 起不来，给清晰错误
-	if !isTTY() {
+	// 例外：--server 模式不需要 TTY
+	if serverAddr == "" && !isTTY() {
 		return fmt.Errorf("acorn 需要交互式 TTY（stdin 必须是 terminal）。\n" +
-			"提示：直接跑 `./acorn`；CI 场景考虑用 v1 的 HTTP API")
+			"提示：直接跑 `./acorn`；CI 场景用 `--server=:8080` 起 HTTP API")
 	}
 
 	// 1. 初始化基础设施
@@ -182,9 +187,31 @@ func run(modelName, dbPath, providerName string) error {
 		Ctx:       ctx,
 	})
 
+	// 9. 启 TUI 或 HTTP server
+	if serverAddr != "" {
+		// server 模式：Broker 不设 publisher → ask fallback allow
+		fmt.Fprintf(os.Stderr, "[启动 HTTP server: %s]\n", serverAddr)
+		return startServer(serverAddr, provider, strategy, store, tools, broker, loader, llm.Model{ID: modelName, ProviderID: providerID})
+	}
+
 	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = prog.Run()
 	return err
+}
+
+// startServer 启动 HTTP server（v1.0.4）
+func startServer(addr string, provider llm.Provider, strategy toolcall.Strategy, store *session.SQLiteStore, tools *tool.Registry, broker *permission.Broker, loader *instruction.Loader, model llm.Model) error {
+	srv := server.New(server.Config{
+		Addr:     addr,
+		Provider: provider,
+		Strategy: strategy,
+		Store:    store,
+		Tools:    tools,
+		Broker:   broker,
+		Loader:   loader,
+		Model:    model,
+	})
+	return srv.Start()
 }
 
 func envOr(key, def string) string {
