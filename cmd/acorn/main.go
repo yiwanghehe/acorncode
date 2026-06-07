@@ -100,6 +100,7 @@ func run(modelName, dbPath string) error {
 		broker.AddRules(permCfg.Permissions.Rules)
 		fmt.Fprintf(os.Stderr, "[已加载 acorncode.json: %d 规则]\n", len(permCfg.Permissions.Rules))
 	}
+	broker.SetPublisher(&permissionBusAdapter{bus: eventBus})
 
 	// 5. 加载 AGENTS.md（v0.1 容错：找不到不报错）
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -141,6 +142,7 @@ func run(modelName, dbPath string) error {
 		ModelName: modelName,
 		Bus:       eventBus,
 		Loop:      loop,
+		Broker:    broker,
 		Ctx:       ctx,
 	})
 
@@ -159,6 +161,19 @@ func envOr(key, def string) string {
 // isTTY 检查 stdin 是否是 TTY
 func isTTY() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// permissionBusAdapter 把 bus.Bus 适配成 permission.Publisher（避免 import 循环）
+type permissionBusAdapter struct {
+	bus *bus.Bus
+}
+
+func (a *permissionBusAdapter) Publish(ev permission.Event) {
+	a.bus.Publish(bus.Event{
+		Type:      ev.Type,
+		SessionID: ev.SessionID,
+		Data:      ev.Data,
+	})
 }
 
 // newShortID 生成 8 字符短 ID

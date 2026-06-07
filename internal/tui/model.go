@@ -17,6 +17,7 @@ import (
 
 	"acorncode/internal/agent"
 	"acorncode/internal/bus"
+	"acorncode/internal/permission"
 	"acorncode/internal/session"
 )
 
@@ -26,6 +27,7 @@ type Config struct {
 	ModelName string
 	Bus       *bus.Bus
 	Loop      *agent.Loop
+	Broker    *permission.Broker
 	Ctx       context.Context
 }
 
@@ -33,7 +35,7 @@ type Config struct {
 type Model struct {
 	cfg Config
 
-	// Bus 订阅（4 个 topic）
+	// Bus 订阅（5 个 topic，v1.0.1 加 permission.asked）
 	subs subscribes
 
 	// UI 状态
@@ -45,19 +47,34 @@ type Model struct {
 	inputOn  bool
 	quitting bool
 
+	// Permission dialog 状态（v1.0.1）
+	permReq    *permRequest // nil = 不在 dialog
+	permChoice int          // 0=Allow, 1=Always, 2=Deny
+
 	// 样式
 	statusStyle lipgloss.Style
 	toolStyle   lipgloss.Style
 	textStyle   lipgloss.Style
 	inputStyle  lipgloss.Style
+	permStyle   lipgloss.Style
+	permHotKey  lipgloss.Style
 }
 
-// subscribes 记录 4 个 topic 的 channel + id
+// permRequest 是 in-flight permission 弹窗
+type permRequest struct {
+	reqID    string
+	tool     string
+	pattern  string
+	metadata map[string]any
+}
+
+// subscribes 记录 5 个 topic 的 channel + id
 type subscribes struct {
-	partDelta   <-chan bus.Event
-	partUpdated <-chan bus.Event
-	stateChange <-chan bus.Event
-	errorEvent  <-chan bus.Event
+	partDelta     <-chan bus.Event
+	partUpdated   <-chan bus.Event
+	stateChange   <-chan bus.Event
+	errorEvent    <-chan bus.Event
+	permissionAsk <-chan bus.Event
 }
 
 // NewModel 构造 Model
@@ -75,22 +92,30 @@ func NewModel(cfg Config) *Model {
 			Foreground(lipgloss.Color("white")),
 		inputStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("cyan")),
+		permStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("magenta")).
+			Bold(true),
+		permHotKey: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("magenta")).
+			Underline(true),
 	}
 }
 
-// Init 实现 tea.Model。订阅 bus 4 个 topic
+// Init 实现 tea.Model。订阅 bus 5 个 topic
 func (m *Model) Init() tea.Cmd {
 	m.subs.partDelta, _ = m.cfg.Bus.SubscribeID(bus.EventPartDelta)
 	m.subs.partUpdated, _ = m.cfg.Bus.SubscribeID(bus.EventPartUpdated)
 	m.subs.stateChange, _ = m.cfg.Bus.SubscribeID(bus.EventAgentStateChange)
 	m.subs.errorEvent, _ = m.cfg.Bus.SubscribeID(bus.EventError)
+	m.subs.permissionAsk, _ = m.cfg.Bus.SubscribeID(bus.EventPermissionAsked)
 
-	// 启动 4 个 listener
+	// 启动 5 个 listener
 	return tea.Batch(
 		listenCmd(m.cfg.Ctx, m.subs.partDelta),
 		listenCmd(m.cfg.Ctx, m.subs.partUpdated),
 		listenCmd(m.cfg.Ctx, m.subs.stateChange),
 		listenCmd(m.cfg.Ctx, m.subs.errorEvent),
+		listenCmd(m.cfg.Ctx, m.subs.permissionAsk),
 	)
 }
 
@@ -103,6 +128,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Permission 弹窗模式：所有键都进 dialog（除非 ctrl+c）
+		if m.permReq != nil {
+			if msg.String() == "ctrl+c" {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, m.handlePermKey(msg.String())
+		}
+
 		if msg.String() == "ctrl+c" {
 			m.quitting = true
 			return m, tea.Quit
@@ -168,6 +202,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			listenCmd(m.cfg.Ctx, m.subs.partUpdated),
 			listenCmd(m.cfg.Ctx, m.subs.stateChange),
 			listenCmd(m.cfg.Ctx, m.subs.errorEvent),
+			listenCmd(m.cfg.Ctx, m.subs.permissionAsk),
 		)
 
 	case loopDoneMsg:
@@ -187,6 +222,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) View() string {
 	if m.quitting {
 		return "Bye.\n"
+	}
+
+	// Permission 弹窗优先显示
+	if m.permReq != nil {
+		return m.renderPermissionDialog()
 	}
 
 	divider := strings.Repeat("─", max(m.width, 20))
@@ -218,6 +258,49 @@ func (m *Model) View() string {
 	} else {
 		sb.WriteString(m.statusStyle.Render("(busy, press Ctrl+C to abort)"))
 	}
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
+// renderPermissionDialog 渲染权限弹窗
+func (m *Model) renderPermissionDialog() string {
+	var sb strings.Builder
+	sb.WriteString(m.permStyle.Render("⚠ Permission needed"))
+	sb.WriteString("\n")
+	sb.WriteString(strings.Repeat("─", max(m.width, 20)))
+	sb.WriteString("\n\n")
+
+	// 显示工具 + pattern
+	sb.WriteString(m.textStyle.Render(fmt.Sprintf("Tool:    %s\n", m.permReq.tool)))
+	if m.permReq.pattern != "" {
+		sb.WriteString(m.textStyle.Render(fmt.Sprintf("Pattern: %s\n", m.permReq.pattern)))
+	}
+	if m.permReq.metadata != nil {
+		for k, v := range m.permReq.metadata {
+			sb.WriteString(m.textStyle.Render(fmt.Sprintf("%s: %v\n", k, v)))
+		}
+	}
+	sb.WriteString("\n")
+
+	// 3 个选项
+	options := []string{"Allow", "Always", "Deny"}
+	keys := []string{"1", "2", "3"}
+	decisions := []string{"(once)", "(session)", ""}
+
+	for i, opt := range options {
+		var style lipgloss.Style
+		if i == m.permChoice {
+			style = m.permHotKey
+		} else {
+			style = m.statusStyle
+		}
+		sb.WriteString(style.Render(fmt.Sprintf("  [%s] %s %s", keys[i], opt, decisions[i])))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(m.statusStyle.Render("←/→ 选择，Enter 确认，Esc 拒绝"))
 	sb.WriteString("\n")
 
 	return sb.String()
@@ -311,7 +394,74 @@ func (m *Model) handleBusEvent(ev bus.Event) {
 			}
 		}
 		m.setStatus(fmt.Sprintf("Error: %v", ev.Data))
+
+	case "permission.asked":
+		// v1.0.1：弹窗
+		if data, ok := ev.Data.(map[string]any); ok {
+			m.permReq = &permRequest{
+				reqID:    data["req_id"].(string),
+				tool:     data["tool"].(string),
+				pattern:  firstPattern(data),
+				metadata: metaOf(data),
+			}
+			m.permChoice = 0
+			m.setStatus("Permission needed")
+		}
 	}
+}
+
+// firstPattern 从 permission.asked data 拿第一个 pattern
+func firstPattern(data map[string]any) string {
+	ps, ok := data["patterns"].([]string)
+	if !ok || len(ps) == 0 {
+		return ""
+	}
+	return ps[0]
+}
+
+// metaOf 从 data 拿 metadata（best effort）
+func metaOf(data map[string]any) map[string]any {
+	if m, ok := data["metadata"].(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
+// handlePermKey 处理 permission 弹窗的键盘
+//
+// 1 / a / → / Enter → Allow
+// 2 / s / Always → 标记 session 级 + Allow
+// 3 / d / Esc → Deny
+func (m *Model) handlePermKey(key string) tea.Cmd {
+	if m.permReq == nil {
+		return nil
+	}
+	switch key {
+	case "1", "a", "A", "enter":
+		// Allow once
+		m.cfg.Broker.Reply(m.permReq.reqID, "allow", "")
+		m.permReq = nil
+		m.setStatus("Allowed")
+		return nil
+	case "2", "s", "S":
+		// Always (session-level)
+		m.cfg.Broker.SessionApprove(m.permReq.tool, m.permReq.pattern)
+		m.cfg.Broker.Reply(m.permReq.reqID, "session_allow", "")
+		m.permReq = nil
+		m.setStatus("Allowed (session)")
+		return nil
+	case "3", "d", "D", "esc":
+		m.cfg.Broker.Reply(m.permReq.reqID, "deny", "user denied")
+		m.permReq = nil
+		m.setStatus("Denied")
+		return nil
+	case "left":
+		// 循环选项
+		m.permChoice = (m.permChoice + 2) % 3
+	case "tab", "right":
+		m.permChoice = (m.permChoice + 1) % 3
+	}
+	return nil
 }
 
 func (m *Model) setStatus(s string) {

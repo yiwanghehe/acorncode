@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestBroker_EmptyRules_Allow(t *testing.T) {
@@ -213,5 +214,162 @@ func TestLoadConfig_InvalidJSON(t *testing.T) {
 	_, err := LoadConfig(path)
 	if err == nil {
 		t.Errorf("坏 JSON 应返 err")
+	}
+}
+
+// ========== v1.0.1: Ask 真阻塞 + Reply 解阻 ==========
+
+// fakePublisher 记录 Publish 调用
+type fakePublisher struct {
+	mu  sync.Mutex
+	evs []Event
+}
+
+func (f *fakePublisher) Publish(ev Event) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.evs = append(f.evs, ev)
+}
+
+func (f *fakePublisher) Events() []Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]Event, len(f.evs))
+	copy(out, f.evs)
+	return out
+}
+
+func TestAsk_BlocksUntilReply(t *testing.T) {
+	b := NewBroker([]Rule{{Permission: "bash", Action: ActionAsk}})
+	b.SetPublisher(&fakePublisher{})
+
+	// 启 goroutine 调 Ask
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- b.Ask(context.Background(), Request{
+			Permission: "bash",
+			Patterns:   []string{"ls"},
+		})
+	}()
+
+	// 等 publisher 收到事件
+	time.Sleep(50 * time.Millisecond)
+	if b.AskWaitCount() != 1 {
+		t.Errorf("等待数 = %d, 期望 1", b.AskWaitCount())
+	}
+
+	// 找 reqID 并 reply
+	evs := b.bus.(*fakePublisher).Events()
+	if len(evs) != 1 {
+		t.Fatalf("publisher 应收 1 个事件, got %d", len(evs))
+	}
+	data := evs[0].Data.(map[string]any)
+	reqID := data["req_id"].(string)
+
+	// Reply allow
+	if err := b.Reply(reqID, "allow", ""); err != nil {
+		t.Fatalf("Reply err: %v", err)
+	}
+
+	// Ask 应返 nil
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			t.Errorf("Ask 应返 nil, got %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Ask 未在 1s 内返")
+	}
+
+	if b.AskWaitCount() != 0 {
+		t.Errorf("Reply 后等待数 = %d, 期望 0", b.AskWaitCount())
+	}
+}
+
+func TestAsk_ReplyDeny(t *testing.T) {
+	b := NewBroker([]Rule{{Permission: "bash", Action: ActionAsk}})
+	b.SetPublisher(&fakePublisher{})
+
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- b.Ask(context.Background(), Request{
+			Permission: "bash",
+			Patterns:   []string{"rm -rf /"},
+		})
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	evs := b.bus.(*fakePublisher).Events()
+	reqID := evs[0].Data.(map[string]any)["req_id"].(string)
+
+	if err := b.Reply(reqID, "deny", "no"); err != nil {
+		t.Fatalf("Reply err: %v", err)
+	}
+
+	select {
+	case err := <-resultCh:
+		if !errors.Is(err, ErrDenied) {
+			t.Errorf("Ask 应返 ErrDenied, got %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Ask 未返")
+	}
+}
+
+func TestAsk_UnknownReqID(t *testing.T) {
+	b := NewBroker(nil)
+	err := b.Reply("no-such", "allow", "")
+	if err == nil {
+		t.Errorf("未知 reqID 应返 err")
+	}
+}
+
+func TestAsk_NoPublisherFallsBackToAllow(t *testing.T) {
+	// 没 publisher 时，ask 走 fallback log + allow
+	b := NewBroker([]Rule{{Permission: "bash", Action: ActionAsk}})
+	// 故意不 SetPublisher
+
+	err := b.Ask(context.Background(), Request{Permission: "bash"})
+	if err != nil {
+		t.Errorf("无 publisher 应 fallback allow, got %v", err)
+	}
+}
+
+func TestAsk_TimeoutDenies(t *testing.T) {
+	// 缩短超时（v1.0.1 简化：用默认 60s，但测试用 ctx 取消代替）
+	b := NewBroker([]Rule{{Permission: "bash", Action: ActionAsk}})
+	b.SetPublisher(&fakePublisher{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消
+
+	err := b.Ask(ctx, Request{Permission: "bash"})
+	if err == nil {
+		t.Errorf("ctx 取消应返 err")
+	}
+}
+
+func TestAsk_AllowShortCircuits(t *testing.T) {
+	// allow 规则不发 permission.asked
+	b := NewBroker([]Rule{{Permission: "read", Action: ActionAllow}})
+	b.SetPublisher(&fakePublisher{})
+
+	err := b.Ask(context.Background(), Request{Permission: "read"})
+	if err != nil {
+		t.Errorf("allow 应 nil, got %v", err)
+	}
+
+	if len(b.bus.(*fakePublisher).Events()) != 0 {
+		t.Errorf("allow 不应发事件")
+	}
+}
+
+func TestAsk_DenyShortCircuits(t *testing.T) {
+	b := NewBroker([]Rule{{Permission: "bash", Action: ActionDeny}})
+	b.SetPublisher(&fakePublisher{})
+
+	err := b.Ask(context.Background(), Request{Permission: "bash"})
+	if !errors.Is(err, ErrDenied) {
+		t.Errorf("deny 应 ErrDenied, got %v", err)
 	}
 }

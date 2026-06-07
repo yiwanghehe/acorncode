@@ -22,6 +22,7 @@ type Request struct {
 	SessionID  string
 	Permission string
 	Patterns   []string
+	Metadata   map[string]any
 	Tool       *ToolRef
 }
 

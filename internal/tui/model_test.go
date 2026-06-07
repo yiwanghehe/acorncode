@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"acorncode/internal/bus"
+	"acorncode/internal/permission"
 	"acorncode/internal/session"
 )
 
@@ -301,3 +302,193 @@ type testErr struct{}
 func (testErr) Error() string { return "test error" }
 
 var errTest = testErr{}
+
+// ========== v1.0.1: Permission 弹窗 ==========
+
+func TestView_PermissionDialog(t *testing.T) {
+	m := NewModel(Config{
+		SessionID: "s1", ModelName: "m",
+		Bus: bus.New(), Broker: permission.NewBroker(nil),
+		Ctx: context.Background(),
+	})
+	m.width = 80
+
+	m.permReq = &permRequest{
+		reqID:   "ask-1",
+		tool:    "bash",
+		pattern: "rm -rf /",
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "Permission needed") {
+		t.Errorf("View 应含 'Permission needed': %s", view)
+	}
+	if !strings.Contains(view, "bash") {
+		t.Errorf("View 应含 tool name 'bash': %s", view)
+	}
+	if !strings.Contains(view, "rm -rf /") {
+		t.Errorf("View 应含 pattern: %s", view)
+	}
+	if !strings.Contains(view, "Allow") || !strings.Contains(view, "Always") || !strings.Contains(view, "Deny") {
+		t.Errorf("View 应含 3 选项: %s", view)
+	}
+}
+
+func TestUpdate_PermissionAsked_OpensDialog(t *testing.T) {
+	m := NewModel(Config{
+		SessionID: "s1", ModelName: "m",
+		Bus: bus.New(), Broker: permission.NewBroker(nil),
+		Ctx: context.Background(),
+	})
+
+	ev := bus.Event{
+		Type:      "permission.asked",
+		SessionID: "s1",
+		Data: map[string]any{
+			"req_id":   "ask-test-123",
+			"tool":     "edit",
+			"patterns": []string{"/etc/passwd"},
+		},
+	}
+	m.handleBusEvent(ev)
+
+	if m.permReq == nil {
+		t.Fatal("permReq 应非 nil")
+	}
+	if m.permReq.tool != "edit" {
+		t.Errorf("tool = %q, 期望 edit", m.permReq.tool)
+	}
+	if m.permReq.pattern != "/etc/passwd" {
+		t.Errorf("pattern = %q, 期望 /etc/passwd", m.permReq.pattern)
+	}
+	if m.permChoice != 0 {
+		t.Errorf("初始 choice = %d, 期望 0", m.permChoice)
+	}
+}
+
+func TestUpdate_PermKey_AllowOnce(t *testing.T) {
+	broker := permission.NewBroker(nil)
+	m := NewModel(Config{
+		SessionID: "s1", ModelName: "m",
+		Bus: bus.New(), Broker: broker,
+		Ctx: context.Background(),
+	})
+	m.permReq = &permRequest{reqID: "ask-x", tool: "read", pattern: "/x"}
+
+	// 按 1
+	_ = m.handlePermKey("1")
+
+	if m.permReq != nil {
+		t.Errorf("Allow 后 permReq 应清空")
+	}
+	if !strings.Contains(m.status, "Allowed") {
+		t.Errorf("status 应含 'Allowed': %q", m.status)
+	}
+}
+
+func TestUpdate_PermKey_AllowSession(t *testing.T) {
+	broker := permission.NewBroker(nil)
+	m := NewModel(Config{
+		SessionID: "s1", ModelName: "m",
+		Bus: bus.New(), Broker: broker,
+		Ctx: context.Background(),
+	})
+	m.permReq = &permRequest{reqID: "ask-x", tool: "read", pattern: "/x"}
+
+	// 按 2
+	_ = m.handlePermKey("2")
+
+	if m.permReq != nil {
+		t.Errorf("session_allow 后 permReq 应清空")
+	}
+	// SessionApprove 应已标记
+	// （直接调 broker.Ask 验证）
+	err := broker.Ask(context.Background(), permission.Request{
+		Permission: "read",
+		Patterns:   []string{"/x"},
+	})
+	if err != nil {
+		t.Errorf("session_allow 后再 Ask 应通过, got %v", err)
+	}
+}
+
+func TestUpdate_PermKey_Deny(t *testing.T) {
+	broker := permission.NewBroker(nil)
+	m := NewModel(Config{
+		SessionID: "s1", ModelName: "m",
+		Bus: bus.New(), Broker: broker,
+		Ctx: context.Background(),
+	})
+	m.permReq = &permRequest{reqID: "ask-x", tool: "bash", pattern: "rm -rf /"}
+
+	_ = m.handlePermKey("3")
+
+	if m.permReq != nil {
+		t.Errorf("Deny 后 permReq 应清空")
+	}
+	if !strings.Contains(m.status, "Denied") {
+		t.Errorf("status 应含 'Denied': %q", m.status)
+	}
+}
+
+func TestUpdate_PermKey_TabCycles(t *testing.T) {
+	m := NewModel(Config{
+		SessionID: "s1", ModelName: "m",
+		Bus: bus.New(), Broker: permission.NewBroker(nil),
+		Ctx: context.Background(),
+	})
+	m.permReq = &permRequest{reqID: "ask-x", tool: "read"}
+	m.permChoice = 0
+
+	_ = m.handlePermKey("right")
+	if m.permChoice != 1 {
+		t.Errorf("right 后 = %d, 期望 1", m.permChoice)
+	}
+	_ = m.handlePermKey("right")
+	if m.permChoice != 2 {
+		t.Errorf("right 后 = %d, 期望 2", m.permChoice)
+	}
+	_ = m.handlePermKey("right")
+	if m.permChoice != 0 {
+		t.Errorf("right 后 wrap = %d, 期望 0", m.permChoice)
+	}
+	_ = m.handlePermKey("left")
+	if m.permChoice != 2 {
+		t.Errorf("left 后 wrap = %d, 期望 2", m.permChoice)
+	}
+}
+
+func TestUpdate_PermMode_InterceptsKeys(t *testing.T) {
+	m := NewModel(Config{
+		SessionID: "s1", ModelName: "m",
+		Bus: bus.New(), Broker: permission.NewBroker(nil),
+		Ctx: context.Background(),
+	})
+	m.permReq = &permRequest{reqID: "ask-x", tool: "bash"}
+
+	// 在 perm 模式下，普通键（如 'h'）应被弹窗吃掉，不进 input
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	if m.input != "" {
+		t.Errorf("perm 模式下 input 不应被加字符: %q", m.input)
+	}
+	if m.permReq == nil {
+		t.Errorf("perm 模式不该被吃掉")
+	}
+}
+
+func TestUpdate_PermMode_CtrlCStillQuits(t *testing.T) {
+	m := NewModel(Config{
+		SessionID: "s1", ModelName: "m",
+		Bus: bus.New(), Broker: permission.NewBroker(nil),
+		Ctx: context.Background(),
+	})
+	m.permReq = &permRequest{reqID: "ask-x", tool: "bash"}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Errorf("Ctrl+C 应仍 Quit")
+	}
+	if !m.quitting {
+		t.Errorf("Ctrl+C 后 quitting 应 true")
+	}
+}
