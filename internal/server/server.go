@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,6 +59,7 @@ type Config struct {
 	Broker   *permission.Broker
 	Loader   *instruction.Loader
 	Model    llm.Model
+	APIKey   string // v1.1.1：设了就要 Authorization: Bearer <key>，空则开放
 }
 
 // Server 持有依赖 + http.Server
@@ -73,14 +75,56 @@ func New(cfg Config) *Server {
 	}
 	s := &Server{cfg: cfg}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/v1/chat", s.handleChat)
+	mux.HandleFunc("/healthz", s.handleHealth) // 健康检查无鉴权
+	// v1/ 端点包鉴权中间件
+	mux.Handle("/v1/chat", s.withAuth(http.HandlerFunc(s.handleChat)))
+	mux.Handle("/v1/sessions", s.withAuth(http.HandlerFunc(s.handleSessions)))
+	mux.Handle("/v1/sessions/", s.withAuth(http.HandlerFunc(s.handleSessionByID)))
 	s.srv = &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
+}
+
+// withAuth 鉴权中间件（v1.1.1）
+//
+//   - cfg.APIKey == ""  → 开放（dev 模式）
+//   - 否则要求 "Authorization: Bearer <key>"，key 不匹配返 401
+//
+// 用 crypto/subtle.ConstantTimeCompare 防 timing attack。
+func (s *Server) withAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.APIKey == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		auth := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if !strings.HasPrefix(auth, prefix) {
+			s.unauthorized(w, "missing or invalid Authorization scheme (want Bearer)")
+			return
+		}
+		got := auth[len(prefix):]
+		if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.APIKey)) != 1 {
+			s.unauthorized(w, "invalid API key")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// unauthorized 写 401 响应
+func (s *Server) unauthorized(w http.ResponseWriter, msg string) {
+	w.Header().Set("www-authenticate", `Bearer realm="acorn"`)
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error":   "unauthorized",
+		"message": msg,
+	})
 }
 
 // Start 阻塞启动 server
@@ -99,6 +143,16 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("content-type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("OK\n"))
+}
+
+// handleSessions 路由 /v1/sessions（v1.1.2 实现）
+func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "not implemented yet (v1.1.2)", http.StatusNotImplemented)
+}
+
+// handleSessionByID 路由 /v1/sessions/{id}/*（v1.1.2 实现）
+func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "not implemented yet (v1.1.2)", http.StatusNotImplemented)
 }
 
 // ChatRequest 是 /v1/chat 的入参

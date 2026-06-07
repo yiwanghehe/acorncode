@@ -75,6 +75,29 @@ func setupTestServer(t *testing.T, providerText string) (*httptest.Server, func(
 	return ts, cleanup
 }
 
+// setupTestServerWithAuth 构造带 API key 的 server
+func setupTestServerWithAuth(t *testing.T, providerText, apiKey string) (*httptest.Server, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	store, _ := session.NewSQLiteStore(dir + "/test.db")
+	tools := tool.NewRegistry()
+	broker := permission.NewBroker(nil)
+	loader := instruction.NewLoader(".")
+	srv := New(Config{
+		Addr:     ":0",
+		Provider: &fakeProvider{text: providerText},
+		Strategy: toolcall.NewNative(),
+		Store:    store,
+		Tools:    tools,
+		Broker:   broker,
+		Loader:   loader,
+		Model:    llm.Model{ID: "test-model"},
+		APIKey:   apiKey,
+	})
+	ts := httptest.NewServer(srv.srv.Handler)
+	return ts, func() { ts.Close(); _ = store.Close() }
+}
+
 func TestServer_Health(t *testing.T) {
 	ts, cleanup := setupTestServer(t, "hi")
 	defer cleanup()
@@ -199,8 +222,20 @@ func TestServer_Chat_SSEResponse(t *testing.T) {
 	if events[0] != "session" {
 		t.Errorf("首 event = %q, 期望 session", events[0])
 	}
-	if events[len(events)-1] != "finish" {
-		t.Errorf("末 event = %q, 期望 finish", events[len(events)-1])
+	// 末两个 event 应是 state + finish（顺序不固定：state 可在 finish 之前或之后）
+	last := events[len(events)-1]
+	if last != "finish" && last != "state" {
+		t.Errorf("末 event = %q, 期望 finish 或 state", last)
+	}
+	// 应有 finish 事件（不一定是最后）
+	var hasFinish bool
+	for _, e := range events {
+		if e == "finish" {
+			hasFinish = true
+		}
+	}
+	if !hasFinish {
+		t.Errorf("应含 finish event: %v", events)
 	}
 	// 中间应有 text
 	var hasText bool
@@ -245,3 +280,118 @@ func TestServer_Chat_WithSessionID(t *testing.T) {
 
 // helper：避免 time 包 unused
 var _ = time.Now
+
+// ========== v1.1.1: Auth ==========
+
+func TestServer_Auth_OpenByDefault(t *testing.T) {
+	// 没设 APIKey → 开放
+	ts, cleanup := setupTestServer(t, "hi")
+	defer cleanup()
+
+	// 不带 auth header 也能调
+	conn, err := net.Dial("tcp", strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "GET /healthz HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+		strings.TrimPrefix(ts.URL, "http://"))
+
+	br := bufio.NewReader(conn)
+	statusLine, _ := br.ReadString('\n')
+	if !strings.Contains(statusLine, "200") {
+		t.Errorf("无 APIKey 时应开放, got %s", statusLine)
+	}
+}
+
+func TestServer_Auth_RequiresBearerWhenSet(t *testing.T) {
+	ts, cleanup := setupTestServerWithAuth(t, "hi", "secret-key")
+	defer cleanup()
+
+	// 1. 不带 Authorization → 401
+	resp1, err := http.Post(ts.URL+"/v1/chat", "application/json",
+		strings.NewReader(`{"message": "hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp1.Body.Close()
+	if resp1.StatusCode != 401 {
+		t.Errorf("无 auth 应 401, got %d", resp1.StatusCode)
+	}
+	// 2. 错 key → 401
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/chat",
+		strings.NewReader(`{"message": "hi"}`))
+	req.Header.Set("Authorization", "Bearer wrong-key")
+	resp2, _ := http.DefaultClient.Do(req)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 401 {
+		t.Errorf("错 key 应 401, got %d", resp2.StatusCode)
+	}
+	// 3. 错 scheme → 401
+	req3, _ := http.NewRequest("POST", ts.URL+"/v1/chat",
+		strings.NewReader(`{"message": "hi"}`))
+	req3.Header.Set("Authorization", "Basic secret-key")
+	resp3, _ := http.DefaultClient.Do(req3)
+	defer resp3.Body.Close()
+	if resp3.StatusCode != 401 {
+		t.Errorf("错 scheme 应 401, got %d", resp3.StatusCode)
+	}
+}
+
+func TestServer_Auth_ValidKeyPasses(t *testing.T) {
+	ts, cleanup := setupTestServerWithAuth(t, "hi", "secret-key")
+	defer cleanup()
+
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/chat",
+		strings.NewReader(`{"message": "hi"}`))
+	req.Header.Set("Authorization", "Bearer secret-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("正 key 应 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestServer_Auth_HealthzOpen(t *testing.T) {
+	// /healthz 永远开放（k8s liveness）
+	ts, cleanup := setupTestServerWithAuth(t, "hi", "secret-key")
+	defer cleanup()
+
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("/healthz 应开放, got %d", resp.StatusCode)
+	}
+}
+
+func TestServer_Auth_UnauthorizedBody(t *testing.T) {
+	ts, cleanup := setupTestServerWithAuth(t, "hi", "secret-key")
+	defer cleanup()
+
+	resp, err := http.Get(ts.URL + "/v1/chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// 验证响应体是 JSON + 含 error 字段
+	body, _ := io.ReadAll(resp.Body)
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil {
+		t.Errorf("body 应是 JSON, got %s", string(body))
+	}
+	if data["error"] != "unauthorized" {
+		t.Errorf("error 字段 = %v", data["error"])
+	}
+	// 验证 WWW-Authenticate 头
+	if wa := resp.Header.Get("www-authenticate"); !strings.Contains(strings.ToLower(wa), "bearer") {
+		t.Errorf("www-authenticate 应含 bearer: %q", wa)
+	}
+}

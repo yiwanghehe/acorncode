@@ -31,9 +31,9 @@ import (
 )
 
 func main() {
-	modelName, dbPath, providerName, serverAddr, toolcallStrat := parseArgs(os.Args[1:])
+	modelName, dbPath, providerName, serverAddr, toolcallStrat, apiKey := parseArgs(os.Args[1:])
 
-	if err := run(modelName, dbPath, providerName, serverAddr, toolcallStrat); err != nil {
+	if err := run(modelName, dbPath, providerName, serverAddr, toolcallStrat, apiKey); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
@@ -44,13 +44,15 @@ func main() {
 //	--db=path              SQLite db 路径（默认 .acorncode.db）
 //	--provider=NAME        provider 名（ollama | anthropic，默认 ollama）
 //	--server=ADDR          启 HTTP server（v1.0.4；如 ":8080"），默认不起
-//	--toolcall=NAME        toolcall 策略（native | prompted，默认 native）
+//	--toolcall=NAME        toolcall 策略（native | prompted | grammar，默认 native）
+//	--api-key=KEY          v1.1.1：HTTP 鉴权（也读 ACORN_API_KEY env）
 //	[model]                模型名（默认 qwen2.5-coder:7b）
-func parseArgs(args []string) (modelName, dbPath, providerName, serverAddr, toolcallStrat string) {
+func parseArgs(args []string) (modelName, dbPath, providerName, serverAddr, toolcallStrat, apiKey string) {
 	modelName = "qwen2.5-coder:7b"
 	dbPath = ".acorncode.db"
 	providerName = "ollama"
 	toolcallStrat = "native"
+	apiKey = os.Getenv("ACORN_API_KEY") // env 兜底
 	for _, arg := range args {
 		switch {
 		case strings.HasPrefix(arg, "--db="):
@@ -61,6 +63,8 @@ func parseArgs(args []string) (modelName, dbPath, providerName, serverAddr, tool
 			serverAddr = strings.TrimPrefix(arg, "--server=")
 		case strings.HasPrefix(arg, "--toolcall="):
 			toolcallStrat = strings.TrimPrefix(arg, "--toolcall=")
+		case strings.HasPrefix(arg, "--api-key="):
+			apiKey = strings.TrimPrefix(arg, "--api-key=")
 		case !strings.HasPrefix(arg, "-"):
 			modelName = arg
 		}
@@ -68,7 +72,7 @@ func parseArgs(args []string) (modelName, dbPath, providerName, serverAddr, tool
 	return
 }
 
-func run(modelName, dbPath, providerName, serverAddr, toolcallStrat string) error {
+func run(modelName, dbPath, providerName, serverAddr, toolcallStrat, apiKey string) error {
 	// 0. TTY 检测（v0.6 整合）：无 TTY 时 TUI 起不来，给清晰错误
 	// 例外：--server 模式不需要 TTY
 	if serverAddr == "" && !isTTY() {
@@ -207,7 +211,12 @@ func run(modelName, dbPath, providerName, serverAddr, toolcallStrat string) erro
 	if serverAddr != "" {
 		// server 模式：Broker 不设 publisher → ask fallback allow
 		fmt.Fprintf(os.Stderr, "[启动 HTTP server: %s]\n", serverAddr)
-		return startServer(serverAddr, provider, strategy, store, tools, broker, loader, llm.Model{ID: modelName, ProviderID: providerID})
+		if apiKey != "" {
+			fmt.Fprintf(os.Stderr, "[鉴权: 已启用]\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "[鉴权: 关闭（无 ACORN_API_KEY）]\n")
+		}
+		return startServer(serverAddr, provider, strategy, store, tools, broker, loader, llm.Model{ID: modelName, ProviderID: providerID}, apiKey)
 	}
 
 	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
@@ -216,7 +225,7 @@ func run(modelName, dbPath, providerName, serverAddr, toolcallStrat string) erro
 }
 
 // startServer 启动 HTTP server（v1.0.4）
-func startServer(addr string, provider llm.Provider, strategy toolcall.Strategy, store *session.SQLiteStore, tools *tool.Registry, broker *permission.Broker, loader *instruction.Loader, model llm.Model) error {
+func startServer(addr string, provider llm.Provider, strategy toolcall.Strategy, store *session.SQLiteStore, tools *tool.Registry, broker *permission.Broker, loader *instruction.Loader, model llm.Model, apiKey string) error {
 	srv := server.New(server.Config{
 		Addr:     addr,
 		Provider: provider,
@@ -226,6 +235,7 @@ func startServer(addr string, provider llm.Provider, strategy toolcall.Strategy,
 		Broker:   broker,
 		Loader:   loader,
 		Model:    model,
+		APIKey:   apiKey,
 	})
 	return srv.Start()
 }
