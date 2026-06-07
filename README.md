@@ -62,31 +62,53 @@ make e2e               # 端到端（需本地 ollama）
 | **bash** tool | `internal/tool/bash.go` | 16 测试 |
 | **grep** tool | `internal/tool/grep.go` | 17 测试 |
 | **glob** tool | `internal/tool/glob.go` | 18 测试 |
+| **webfetch** tool | `internal/tool/webfetch.go` | 19 测试 |
 | In-Memory Store | `internal/session/memstore.go` | 7 测试 |
 | Bus（6 事件） | `internal/bus/event.go` | - |
-| Permission Broker | `internal/permission/broker.go` | 始终允许 |
+| Permission Broker | `internal/permission/broker.go` | 15 测试（v0.3 起支持 acorncode.json 规则） |
 | AGENTS.md Loader | `internal/instruction/loader.go` | - |
 | CLI REPL | `cmd/acorn/main.go` | - |
 
-**总计**：115 测试，< 5 秒。
+**总计**：149 测试，< 5 秒。
 
 ## 当前状态
 
-**v0.2 Grep+Glob** — 5 个 tool（read/edit/bash/grep/glob），v0.1 Tracer Bullet 基础之上加了内容搜索和文件匹配，验证自举开发流程。
+**v0.3 Session-allow + WebFetch** — 6 个 tool（read/edit/bash/grep/glob/webfetch），Broker 支持 acorncode.json 规则 + session-level allow list，WebFetch 带 SSRF 防护。
 
 ### 限制
 
 - 仅 Ollama（Anthropic/OpenAI 在 v1.0）
-- stdout REPL（无 TUI，v0.2 上 Bubble Tea）
-- 无持久化（In-Memory Store，v0.2 换 SQLite）
-- Permission 始终允许（v0.3 加 session allow list）
+- stdout REPL（无 TUI，v0.4 上 Bubble Tea）
+- 无持久化（In-Memory Store，v0.5 换 SQLite）
+- Permission ask 规则默认 allow（v0.4 TUI 弹窗）
+- WebFetch 默认禁私有 IP（含 AWS metadata）
 - Windows 上 bash timeout 测试跳过（exec.CommandContext 行为差异）
 
 ### 下一步
 
-- **v0.2**：Bubble Tea TUI + SQLite 持久化
-- **v0.3**：Grep / Glob / WebFetch tools + session-level allow
+- **v0.4**：Bubble Tea TUI（加 bubbletea + lipgloss 依赖）
+- **v0.5**：SQLite 持久化（加 modernc/sqlite + sqlx 依赖）
 - **v1.0**：Grammar/Prompted toolcall + Anthropic Provider + Compaction
+
+### 配置文件 `acorncode.json`
+
+放在项目根，可选：
+
+```json
+{
+  "permissions": {
+    "rules": [
+      { "tool": "read", "action": "allow" },
+      { "tool": "edit", "action": "ask" },
+      { "tool": "bash", "pattern": "^go (build|test|vet)", "action": "allow" },
+      { "tool": "bash", "action": "deny" },
+      { "tool": "webfetch", "action": "ask" }
+    ]
+  }
+}
+```
+
+`action`: `allow` / `deny` / `ask`（v0.3 ask 默认 allow，v0.4 TUI 弹窗）。`pattern` 是 Go 正则，按 tool 匹配第一条命中。
 
 ## 关键设计决策
 

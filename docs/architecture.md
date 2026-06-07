@@ -180,6 +180,7 @@ v0.1 实现：`MemoryStore`（in-memory，append-only + snapshot 读）。v0.2 �
 | bash | `internal/tool/bash.go` | 16 | 30s 默认 timeout + 输出截断（头尾各半，50KB 总） + **非零退出仍 success**（让模型看 stderr 修复） |
 | grep | `internal/tool/grep.go` | 17 | path/pattern/include/ignore_case/line_numbers/max_results；跳过重目录 + 二进制；输出 `path\tline:content` |
 | glob | `internal/tool/glob.go` | 18 | 自实现 `*` `**` `?` `[abc]`（0 依赖）；type 过滤 file/dir/any |
+| webfetch | `internal/tool/webfetch.go` | 19 | HTTP/HTTPS + 30s timeout + 1MB body + **SSRF 禁私有 IP** + 重定向 5 次限制 + 自定义 headers |
 
 所有 tool 的 `Execute()` 第一步都是路径 normalize：
 
