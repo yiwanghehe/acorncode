@@ -19,6 +19,7 @@ import (
 
 	"acorncode/internal/agent"
 	"acorncode/internal/bus"
+	"acorncode/internal/compaction"
 	"acorncode/internal/instruction"
 	"acorncode/internal/llm"
 	"acorncode/internal/permission"
@@ -160,6 +161,16 @@ func run(modelName, dbPath, providerName string) error {
 		MaxTools:     10,
 	}
 	loop := agent.NewLoop(sess.ID, loopCfg, store, eventBus, provider, strategy, tools, broker, loader)
+
+	// 7.5 注入 compactor（v1.0.3）：用同一 provider 摘要老消息
+	compactor := &compaction.SimpleCompactor{
+		Provider:   provider,
+		Model:      loopCfg.Model,
+		KeepRecent: 6, // 保留最近 6 条不压
+		MaxSummary: 500,
+	}
+	loop.SetCompactor(compactor)
+	fmt.Fprintf(os.Stderr, "[已启用 compactor: keep_recent=6]\n")
 
 	// 8. 启动 Bubble Tea TUI
 	model := tui.NewModel(tui.Config{

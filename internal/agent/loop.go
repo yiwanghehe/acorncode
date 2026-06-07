@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"acorncode/internal/bus"
+	"acorncode/internal/compaction"
 	"acorncode/internal/instruction"
 	"acorncode/internal/llm"
 	"acorncode/internal/permission"
@@ -96,6 +97,7 @@ type Loop struct {
 	tools     *tool.Registry
 	perm      *permission.Broker
 	instr     *instruction.Loader
+	compactor compaction.Compactor // 可选：v1.0.3 起
 
 	state LoopState
 	turn  int
@@ -117,6 +119,11 @@ func NewLoop(sessionID string, cfg LoopConfig, store SessionStore, b *bus.Bus, p
 		state:     StateIdle,
 		fail:      newTurnState(),
 	}
+}
+
+// SetCompactor 注入 compactor（v1.0.3 起）
+func (l *Loop) SetCompactor(c compaction.Compactor) {
+	l.compactor = c
 }
 
 // CurrentState 返回当前状态（用于测试和 TUI 显示）
@@ -427,13 +434,57 @@ func errSignature(call ToolCall, result tool.Result) string {
 }
 
 // ============================================================
-// Compaction（Phase 2 才实现）
+// Compaction（v1.0.3 实现）
 // ============================================================
 
-// compact 是压缩入口，v1 stub：返回错误让 Loop 退出
+// compact 是压缩入口。v1.0.3 起调 compactor。
+// 若 compactor 未注入，走 v0.1 stub：返错让 Loop 退到 errFatal。
 func (l *Loop) compact(ctx context.Context) error {
 	slog.InfoContext(ctx, "compact 触发", "session_id", l.sessionID)
-	return errors.New("compactor 尚未实现，留待 Phase 2")
+	if l.compactor == nil {
+		return errors.New("compactor 尚未注入，留待后续")
+	}
+
+	// 1. 取所有消息
+	msgs, err := l.store.Messages(ctx, l.sessionID, 0)
+	if err != nil {
+		return fmt.Errorf("读消息失败: %w", err)
+	}
+
+	// 2. 构 llm.Message 列表
+	llmMsgs := make([]llm.Message, 0, len(msgs))
+	for _, m := range msgs {
+		llmMsgs = append(llmMsgs, llm.Message{
+			Role:    m.Role,
+			Content: extractText(m),
+		})
+	}
+
+	// 3. 调 compactor
+	newMsgs, err := l.compactor.Compact(ctx, llmMsgs)
+	if err != nil {
+		slog.WarnContext(ctx, "compact 失败，使用原消息", "err", err)
+		// 不阻断：让 Loop 继续用原 history（可能超 token，但 try）
+		return nil
+	}
+
+	// 4. 写回 store（v1.0.3 简化：仅打日志，不持久化压缩结果）
+	// 真正持久化要清空原 messages 再追加新 summary，留给 v1.0.4
+	slog.InfoContext(ctx, "compact 完成",
+		"原消息数", len(llmMsgs),
+		"压缩后数", len(newMsgs),
+	)
+	return nil
+}
+
+// extractText 从 message 抽 text
+func extractText(m *session.Message) string {
+	for _, p := range m.Parts {
+		if tp, ok := p.(*session.TextPart); ok {
+			return tp.Text
+		}
+	}
+	return ""
 }
 
 // ============================================================
