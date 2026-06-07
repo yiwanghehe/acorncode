@@ -2,6 +2,39 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] - 2026-06
+
+### SQLite 持久化
+
+v0.4 基础之上加 SQLite 持久化，session 不再随进程退出丢失。
+
+**新增**：
+- **SQLiteStore**（19 测试）：modernc.org/sqlite + sqlx；3 表（sessions / messages / parts），WAL + 单连接 + 毫秒精度时间戳
+- **main.go** 加 `--db=path` flag（默认 `.acorncode.db`）
+
+**关键设计**：
+- Part 用 `type` 列 + JSON BLOB 存 data（type=text/tool/reasoning）
+- UpsertPart 用 `ON CONFLICT(id) DO UPDATE`
+- Messages() 分两步取（先 message 后 parts）避免单连接嵌套死锁
+- MemoryStore 保留供测试
+
+**总计**：168 测试，< 5 秒。
+
+## [0.4.0] - 2026-06
+
+### Bubble Tea TUI
+
+v0.3 基础之上加终端 UI。**首次引入第三方依赖**。
+
+**新增**：
+- **Bubble Tea TUI**（15 测试）：状态栏 + 流式正文 + input box
+- 快捷键：Ctrl+C / Esc 退出，Enter 发送，Backspace 删除
+- 命令：`/exit` `/quit` `/clear` `/session` `/help`
+- 依赖：`github.com/charmbracelet/bubbletea` + `github.com/charmbracelet/lipgloss`
+- Go 1.22 → 1.24（bubbletea 要求）
+
+**总计**：149 测试，< 5 秒。
+
 ## [0.3.0] - 2026-06
 
 ### Session-level allow + WebFetch
@@ -14,7 +47,7 @@ v0.2 基础之上加配置化权限 + 外部网络工具。
 - **Session allow list**：session 内 `SessionApprove(tool, pattern)`，跨 turn 保留
 - **LoadConfig**：配置文件加载（不存在不报错）
 
-**总计**：149 测试，< 5 秒。**0 第三方依赖**（仍）。
+**总计**：134 测试，< 5 秒。**0 第三方依赖**。
 
 ## [0.2.0] - 2026-06
 
@@ -45,15 +78,14 @@ v0.1 基础之上加 2 个新 tool，**由模型用 AcornCode 自己写**（READ
 - In-Memory Store + 真实 Broker（始终允许）+ AGENTS.md Loader
 - stdout REPL
 
-**已知限制**：仅 Ollama / 无 TUI / 无持久化 / 无 Session-level allow（见 [README.md §当前状态](README.md#当前状态)）。
-
 ## [Unreleased]
 
 ### 计划
-- v0.4：Bubble Tea TUI（加 bubbletea + lipgloss 依赖）
-- v0.5：SQLite 持久化（加 modernc/sqlite + sqlx 依赖）
-- v1.0：Grammar/Prompted toolcall + Anthropic Provider + Compaction
+- v1.0：Compaction + Anthropic Provider + Grammar/Prompted toolcall
+- v1.x：MCP stdio Client + HTTP/SSE Server
 
+[0.5.0]: https://github.com/yiwanghehe/acorncode/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/yiwanghehe/acorncode/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yiwanghehe/acorncode/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yiwanghehe/acorncode/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yiwanghehe/acorncode/releases/tag/v0.1.0

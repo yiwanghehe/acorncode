@@ -191,6 +191,35 @@ if !filepath.IsAbs(path) {
 path = filepath.Clean(path)
 ```
 
+## 6. TUI（v0.4+）
+
+Bubble Tea + Lipgloss。简化版：
+
+- 顶部状态栏：`[model] status [→ tool_name]`
+- 中部正文：当前 turn 累积文本（流式 part.delta）
+- 底部 input box：`> ` + 用户输入
+- 快捷键：Ctrl+C / Esc 退出；Enter 发送；Backspace 删除
+- 命令：`/exit` `/quit` `/clear` `/session` `/help`
+
+完整 TUI 设计见原 [docs/acorncode-architect.md §11.2](architecture.md) 备份；v0.4 实现是 §11.2 简化子集。
+
+## 7. Session 存储（v0.5+）
+
+`SQLiteStore`（v0.5 起默认）实现：
+
+```sql
+CREATE TABLE sessions (id TEXT PK, parent_id, title, directory, agent, created_at_ms, updated_at_ms);
+CREATE TABLE messages (id TEXT PK, session_id, role, finish_reason, created_at_ms, updated_at_ms);
+CREATE TABLE parts (id TEXT PK, message_id, session_id, type TEXT, data BLOB, created_at_ms);
+```
+
+关键：
+- WAL + 单连接（写多读少）
+- 时间戳毫秒精度
+- Part 用 `type` 列 + JSON BLOB 存 data
+- `MemoryStore` 仍保留供测试
+- 默认 db 文件：`.acorncode.db`（`--db=path` 改）
+
 ## 6. 自举开发模式
 
 核心差异化：让模型用 AcornCode 写新 AcornCode 工具。
