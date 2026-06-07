@@ -12,7 +12,7 @@ import (
 //
 // Go 测试默认 stdin 不是 TTY，所以这条测试天然适用
 func TestRun_RequiresTTY(t *testing.T) {
-	err := run("test-model", t.TempDir()+"/test.db", "ollama", "")
+	err := run("test-model", t.TempDir()+"/test.db", "ollama", "", "native")
 	if err == nil {
 		t.Skip("当前环境是 TTY（罕见）；跳过")
 	}
@@ -29,19 +29,21 @@ func TestParseArgs(t *testing.T) {
 		wantDB       string
 		wantProvider string
 		wantServer   string
+		wantTC       string
 	}{
-		{[]string{}, "qwen2.5-coder:7b", ".acorncode.db", "ollama", ""},
-		{[]string{"llama3.1:8b"}, "llama3.1:8b", ".acorncode.db", "ollama", ""},
-		{[]string{"--db=/tmp/x.db"}, "qwen2.5-coder:7b", "/tmp/x.db", "ollama", ""},
-		{[]string{"--provider=anthropic"}, "qwen2.5-coder:7b", ".acorncode.db", "anthropic", ""},
-		{[]string{"--server=:8080"}, "qwen2.5-coder:7b", ".acorncode.db", "ollama", ":8080"},
-		{[]string{"claude-3-5-sonnet-latest", "--provider=anthropic", "--server=:9000"},
-			"claude-3-5-sonnet-latest", ".acorncode.db", "anthropic", ":9000"},
+		{[]string{}, "qwen2.5-coder:7b", ".acorncode.db", "ollama", "", "native"},
+		{[]string{"llama3.1:8b"}, "llama3.1:8b", ".acorncode.db", "ollama", "", "native"},
+		{[]string{"--db=/tmp/x.db"}, "qwen2.5-coder:7b", "/tmp/x.db", "ollama", "", "native"},
+		{[]string{"--provider=anthropic"}, "qwen2.5-coder:7b", ".acorncode.db", "anthropic", "", "native"},
+		{[]string{"--server=:8080"}, "qwen2.5-coder:7b", ".acorncode.db", "ollama", ":8080", "native"},
+		{[]string{"--toolcall=prompted"}, "qwen2.5-coder:7b", ".acorncode.db", "ollama", "", "prompted"},
+		{[]string{"claude-3-5-sonnet-latest", "--provider=anthropic", "--server=:9000", "--toolcall=prompted"},
+			"claude-3-5-sonnet-latest", ".acorncode.db", "anthropic", ":9000", "prompted"},
 	}
 
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, "_"), func(t *testing.T) {
-			model, db, provider, serverAddr := parseArgs(tt.args)
+			model, db, provider, serverAddr, tc := parseArgs(tt.args)
 			if model != tt.wantModel {
 				t.Errorf("model = %q, 期望 %q", model, tt.wantModel)
 			}
@@ -53,6 +55,9 @@ func TestParseArgs(t *testing.T) {
 			}
 			if serverAddr != tt.wantServer {
 				t.Errorf("server = %q, 期望 %q", serverAddr, tt.wantServer)
+			}
+			if tc != tt.wantTC {
+				t.Errorf("toolcall = %q, 期望 %q", tc, tt.wantTC)
 			}
 		})
 	}

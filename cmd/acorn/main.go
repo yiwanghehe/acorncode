@@ -31,9 +31,9 @@ import (
 )
 
 func main() {
-	modelName, dbPath, providerName, serverAddr := parseArgs(os.Args[1:])
+	modelName, dbPath, providerName, serverAddr, toolcallStrat := parseArgs(os.Args[1:])
 
-	if err := run(modelName, dbPath, providerName, serverAddr); err != nil {
+	if err := run(modelName, dbPath, providerName, serverAddr, toolcallStrat); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
@@ -44,11 +44,13 @@ func main() {
 //	--db=path              SQLite db 路径（默认 .acorncode.db）
 //	--provider=NAME        provider 名（ollama | anthropic，默认 ollama）
 //	--server=ADDR          启 HTTP server（v1.0.4；如 ":8080"），默认不起
+//	--toolcall=NAME        toolcall 策略（native | prompted，默认 native）
 //	[model]                模型名（默认 qwen2.5-coder:7b）
-func parseArgs(args []string) (modelName, dbPath, providerName, serverAddr string) {
+func parseArgs(args []string) (modelName, dbPath, providerName, serverAddr, toolcallStrat string) {
 	modelName = "qwen2.5-coder:7b"
 	dbPath = ".acorncode.db"
 	providerName = "ollama"
+	toolcallStrat = "native"
 	for _, arg := range args {
 		switch {
 		case strings.HasPrefix(arg, "--db="):
@@ -57,6 +59,8 @@ func parseArgs(args []string) (modelName, dbPath, providerName, serverAddr strin
 			providerName = strings.TrimPrefix(arg, "--provider=")
 		case strings.HasPrefix(arg, "--server="):
 			serverAddr = strings.TrimPrefix(arg, "--server=")
+		case strings.HasPrefix(arg, "--toolcall="):
+			toolcallStrat = strings.TrimPrefix(arg, "--toolcall=")
 		case !strings.HasPrefix(arg, "-"):
 			modelName = arg
 		}
@@ -64,7 +68,7 @@ func parseArgs(args []string) (modelName, dbPath, providerName, serverAddr strin
 	return
 }
 
-func run(modelName, dbPath, providerName, serverAddr string) error {
+func run(modelName, dbPath, providerName, serverAddr, toolcallStrat string) error {
 	// 0. TTY 检测（v0.6 整合）：无 TTY 时 TUI 起不来，给清晰错误
 	// 例外：--server 模式不需要 TTY
 	if serverAddr == "" && !isTTY() {
@@ -89,6 +93,7 @@ func run(modelName, dbPath, providerName, serverAddr string) error {
 
 	// 2. LLM provider（v1.0.2 起支持 ollama + anthropic）
 	var provider llm.Provider
+	var strategy toolcall.Strategy
 	providerID := "ollama"
 	switch providerName {
 	case "ollama", "":
@@ -110,7 +115,16 @@ func run(modelName, dbPath, providerName, serverAddr string) error {
 	default:
 		return fmt.Errorf("未知 provider: %s（支持 ollama / anthropic）", providerName)
 	}
-	strategy := toolcall.NewNative()
+
+	// toolcall 策略（v1.0.5 起）
+	switch toolcallStrat {
+	case "native", "":
+		strategy = toolcall.NewNative()
+	case "prompted":
+		strategy = toolcall.NewPrompted()
+	default:
+		return fmt.Errorf("未知 toolcall 策略: %s（支持 native / prompted）", toolcallStrat)
+	}
 
 	// 3. Tool registry
 	cwd, _ := os.Getwd()
