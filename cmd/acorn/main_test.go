@@ -37,8 +37,9 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"--provider=anthropic"}, "qwen2.5-coder:7b", ".acorncode.db", "anthropic", "", "native"},
 		{[]string{"--server=:8080"}, "qwen2.5-coder:7b", ".acorncode.db", "ollama", ":8080", "native"},
 		{[]string{"--toolcall=prompted"}, "qwen2.5-coder:7b", ".acorncode.db", "ollama", "", "prompted"},
-		{[]string{"claude-3-5-sonnet-latest", "--provider=anthropic", "--server=:9000", "--toolcall=prompted"},
-			"claude-3-5-sonnet-latest", ".acorncode.db", "anthropic", ":9000", "prompted"},
+		{[]string{"--toolcall=grammar"}, "qwen2.5-coder:7b", ".acorncode.db", "ollama", "", "grammar"},
+		{[]string{"claude-3-5-sonnet-latest", "--provider=anthropic", "--server=:9000", "--toolcall=grammar"},
+			"claude-3-5-sonnet-latest", ".acorncode.db", "anthropic", ":9000", "grammar"},
 	}
 
 	for _, tt := range tests {

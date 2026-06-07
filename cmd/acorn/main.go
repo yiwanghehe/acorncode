@@ -116,14 +116,16 @@ func run(modelName, dbPath, providerName, serverAddr, toolcallStrat string) erro
 		return fmt.Errorf("未知 provider: %s（支持 ollama / anthropic）", providerName)
 	}
 
-	// toolcall 策略（v1.0.5 起）
+	// toolcall 策略（v1.0.5 起：native / prompted；v1.0.6：grammar）
 	switch toolcallStrat {
 	case "native", "":
 		strategy = toolcall.NewNative()
 	case "prompted":
 		strategy = toolcall.NewPrompted()
+	case "grammar":
+		strategy = toolcall.NewGrammar()
 	default:
-		return fmt.Errorf("未知 toolcall 策略: %s（支持 native / prompted）", toolcallStrat)
+		return fmt.Errorf("未知 toolcall 策略: %s（支持 native / prompted / grammar）", toolcallStrat)
 	}
 
 	// 3. Tool registry
