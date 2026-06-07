@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -26,24 +27,38 @@ import (
 )
 
 func main() {
-	// 解析 args（v0.1 简单版：第一个非 flag 参数是 model name）
+	// 解析 args（v0.1 简单版：第一个非 flag 参数是 model name；--db=path 指定 db）
 	modelName := "qwen2.5-coder:7b"
-	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
-		modelName = os.Args[1]
+	dbPath := ".acorncode.db" // v0.5 默认 SQLite 持久化
+
+	for _, arg := range os.Args[1:] {
+		if strings.HasPrefix(arg, "--db=") {
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		} else if !strings.HasPrefix(arg, "-") {
+			modelName = arg
+		}
 	}
 
-	if err := run(modelName); err != nil {
+	if err := run(modelName, dbPath); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(modelName string) error {
+func run(modelName, dbPath string) error {
 	// 1. 初始化基础设施
 	eventBus := bus.New()
 	defer eventBus.Close()
 
-	store := session.NewMemoryStore()
+	// SQLite 持久化（v0.5）
+	dbAbs, _ := filepath.Abs(dbPath)
+	store, err := session.NewSQLiteStore(dbAbs)
+	if err != nil {
+		return fmt.Errorf("open db %s: %w", dbAbs, err)
+	}
+	defer store.Close()
+	fmt.Fprintf(os.Stderr, "[已加载 SQLite: %s]\n", dbAbs)
+
 	loader := instruction.NewLoader(".")
 
 	// 2. LLM provider
@@ -118,7 +133,7 @@ func run(modelName string) error {
 	})
 
 	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
-	_, err := prog.Run()
+	_, err = prog.Run()
 	return err
 }
 
