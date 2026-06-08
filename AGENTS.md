@@ -2,7 +2,7 @@
 
 > 必读。新加 tool、发现新坑、改动代码风格，**立即**更新本文件。
 >
-> 当前 **v1.1**：6 个 tool + 3 toolcall 策略 + HTTP 鉴权 + 多 session + **247 测试**。详见 [README.md](README.md) §已实现。
+> 当前 **v1.2**：6 个内置 tool + MCP 外部工具 + 3 toolcall 策略 + HTTP 鉴权 + 多 session + **262 测试**。详见 [README.md](README.md) §已实现。
 
 ## 1. 硬规则
 
@@ -70,6 +70,9 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 | 10 | Bash 长输出爆内存 | 头尾各半（50KB 总） |
 | 11 | Bash 硬编码 `sh -c` 在纯 Windows 跑不了 | `resolveShell()` 按平台选：Unix=`sh -c`；Windows 有 sh 用 `sh -c`，否则 `cmd /c`（v1.1.3） |
 | 12 | cmd `/c` 调 powershell 内层引号被吞 | 表达式不要加内层双引号，如 `powershell -Command [string]::new('a',N)` |
+| 13 | MCP server 一个 stdout 坏行杀整流 | `dispatch` 跳过坏 JSON 行 + `slog.Warn`（同 NDJSON 坑） |
+| 14 | MCP server 退出后请求永久阻塞 | 读循环 EOF 时 `failAllPending` 唤醒所有等待者 |
+| 15 | MCP 多 server 一个坏拖垮全部 | `SetupFromConfigs` 单 server 失败记日志跳过，不致命 |
 
 ## 4. 跑命令
 

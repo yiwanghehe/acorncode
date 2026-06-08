@@ -1,10 +1,10 @@
 # AcornCode
 
-> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.1**
+> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.2**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/)
-[![Tests 247](https://img.shields.io/badge/tests-247%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
+[![Tests 262](https://img.shields.io/badge/tests-262%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
 
 AcornCode 是一个**纯 Go 原生**的 coding agent，类似 [opencode](https://github.com/sst/opencode) 但做了关键简化：
 
@@ -94,9 +94,10 @@ make e2e               # 端到端（需本地 ollama）
 | AGENTS.md Loader | `internal/instruction/loader.go` | - |
 | **Bubble Tea TUI**（5 topic 订阅） | `internal/tui/model.go` | 28 |
 | **HTTP/SSE Server + Bearer 鉴权 + 多 session**（v1.1） | `internal/server/server.go` | 17 |
+| **MCP stdio Client**（v1.2，让模型调外部工具） | `internal/mcp/client.go` | 15 |
 | CLI（TTY 检测 + 6 flag） | `cmd/acorn/main.go` | 11 |
 
-**总计**：**247 测试**，< 5 秒。**4 第三方依赖**。
+**总计**：**262 测试**，< 5 秒。**4 第三方依赖**（MCP 0 新依赖，纯 stdlib）。
 
 ## 当前状态
 
@@ -160,6 +161,35 @@ curl -X POST http://localhost:8080/v1/sessions/sess_xxx/chat \
 ```
 
 `action`: `allow` / `deny` / `ask`（ask 真弹窗 v1.0.1）。`pattern` 是 Go 正则。
+
+### MCP 外部工具（v1.2）
+
+AcornCode 可启动外部 **MCP（Model Context Protocol）server** 子进程，把它们暴露的工具
+自动注册进 agent，让模型调用文件系统、git、数据库等外部能力。在 `acorncode.json`
+里加 `mcpServers` 段（格式兼容主流 MCP 客户端）：
+
+```json
+{
+  "mcpServers": {
+    "fs": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+    },
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git"],
+      "env": { "GIT_AUTHOR_NAME": "acorn" },
+      "disabled": false
+    }
+  }
+}
+```
+
+- 工具 ID 加 server 名前缀避免冲突：`fs` server 的 `read_file` → `fs_read_file`
+- 协议：JSON-RPC 2.0 over stdio（`initialize` 握手 → `tools/list` → `tools/call`）
+- MCP 工具统一走 Permission `ask`（外部进程视作潜在危险）
+- 单个 server 启动/握手失败不致命：记日志跳过，不拖垮 agent
+- `disabled: true` 可临时禁用某个 server
 
 ### 限制
 

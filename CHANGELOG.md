@@ -2,6 +2,29 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.2.0] - 2026-06
+
+### MCP stdio Client（让模型调外部工具）
+
+新增 `internal/mcp` 包：通过 stdio + JSON-RPC 2.0 调用外部 MCP server，
+把它们的工具自动注册进 agent。**0 新第三方依赖**（纯 stdlib）。
+
+**新增**：
+
+- **MCP stdio client**（`client.go`）：启动 server 子进程，`initialize` 握手 →
+  `tools/list` → `tools/call`，并发安全的请求/响应分发（pending map + per-request channel），
+  支持 ctx 取消、超时、坏 JSON 行跳过、优雅关闭（2s 后强杀）
+- **Tool adapter**（`adapter.go`）：把 MCP 工具包成 `tool.Tool`，ID 加 server 名前缀
+  （`fs_read_file`），统一走 Permission `ask`
+- **配置加载**（`config.go`）：从 `acorncode.json` 的 `mcpServers` 段读取（格式兼容主流 MCP 客户端），
+  支持 `disabled` 字段
+- **多 server 管理**（`manager.go`）：`SetupFromConfigs` 批量启动；单个 server 失败不致命（记日志跳过）
+- CLI 接线：启动时自动加载 MCP server，退出时统一关闭
+
+**测试**：mcp 包 15 测试（re-exec 自身作 mock stdio server，无外部依赖）。
+
+**总计**：262 测试。
+
 ## [1.1.0] - 2026-06
 
 ### HTTP 鉴权 + 多 session API
@@ -75,10 +98,10 @@ v1.0 完整版上加 2 个能力，让 server 模式可上生产。
 
 ## 计划 (v1.x)
 
-- v1.2：MCP stdio Client（让模型调外部工具）
 - v1.3：Grammar GBNF 完整版（schema→GBNF 转换器）
 - v2：分布式部署
 
+[1.2.0]: https://github.com/yiwanghehe/acorncode/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/yiwanghehe/acorncode/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/yiwanghehe/acorncode/releases/tag/v1.0.0
 [0.5.1]: https://github.com/yiwanghehe/acorncode/compare/v0.5.0...v0.5.1

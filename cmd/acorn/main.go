@@ -22,6 +22,7 @@ import (
 	"acorncode/internal/compaction"
 	"acorncode/internal/instruction"
 	"acorncode/internal/llm"
+	"acorncode/internal/mcp"
 	"acorncode/internal/permission"
 	"acorncode/internal/server"
 	"acorncode/internal/session"
@@ -160,6 +161,25 @@ func run(modelName, dbPath, providerName, serverAddr, toolcallStrat, apiKey stri
 	instrContent, _ := loader.Load(ctx)
 	if instrContent != "" {
 		fmt.Fprintf(os.Stderr, "[已加载 AGENTS.md: %d 字节]\n", len(instrContent))
+	}
+
+	// 5.5 加载并启动 MCP server（v1.2）：从 acorncode.json 的 mcpServers 段读取
+	mcpFileCfg, mcpErr := mcp.LoadFileConfig("acorncode.json")
+	if mcpErr != nil {
+		fmt.Fprintf(os.Stderr, "[警告: acorncode.json mcpServers 解析失败: %v]\n", mcpErr)
+	}
+	var mcpMgr *mcp.Manager
+	if mcpFileCfg != nil {
+		if cfgs := mcpFileCfg.ToConfigs(); len(cfgs) > 0 {
+			var mcpIDs []string
+			mcpMgr, mcpIDs, _ = mcp.SetupFromConfigs(ctx, cfgs, tools)
+			if len(mcpIDs) > 0 {
+				fmt.Fprintf(os.Stderr, "[已加载 MCP 工具: %d 个 %v]\n", len(mcpIDs), mcpIDs)
+			}
+		}
+	}
+	if mcpMgr != nil {
+		defer mcpMgr.Close()
 	}
 
 	// 6. 创建 session
