@@ -2,7 +2,7 @@
 
 > 必读。新加 tool、发现新坑、改动代码风格，**立即**更新本文件。
 >
-> 当前 v1.0：6 个 tool + 4 依赖 + 227 测试。详见 [README.md](README.md) §已实现。
+> 当前 **v1.1**：6 个 tool + 3 toolcall 策略 + HTTP 鉴权 + 多 session + **247 测试**。详见 [README.md](README.md) §已实现。
 
 ## 1. 硬规则
 
@@ -23,7 +23,8 @@
 ### 1.4 依赖边界
 - **不要在 tool 里调 LLM**（死循环）
 - tool **不要 import** 任何 LLM/provider 包
-- v0.1 强约束：**0 第三方依赖**
+- v1.1 实际依赖（4 个）：bubbletea / lipgloss / modernc-sqlite / sqlx
+- 加新依赖前先想"用 stdlib 能不能做"
 
 ## 2. Tool 实现模板
 
@@ -71,7 +72,7 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 ## 4. 跑命令
 
 ```bash
-make test              # 全部（~5 秒，227 测试）
+make test              # 全部（~5 秒，247 测试）
 make test-llm          # LLM 客户端（10 + 7 anthropic = 17 测试）
 make test-tool         # 工具（22+12+16+17+18+19+2 = 106 测试）
 make test-agent        # Agent 集成（5 测试）
@@ -96,7 +97,7 @@ make e2e               # 端到端（需 ollama + qwen2.5-coder:7b，需 TTY）
 - **1 个 stdlib > 10 个第三方库**（项目约束）
 - **写 5-10 行就跑一次测试** — 不要 100 行不测
 - **失败 3 次停下问** — 别循环
-- **加抽象 / 框架 = 禁止** — v0.1 强约束 0 依赖
+- **加抽象 / 框架 = 禁止** — 用 stdlib 或现有依赖
 - **改架构没 ADR** — 在本文件或 README "Key Decisions" 段写一段
 - **跳过测试 = 禁止**（Windows 例外）
 

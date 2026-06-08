@@ -1,12 +1,12 @@
-# AcornCode 架构（v1.0 完整版）
+# AcornCode 架构（v1.1 完整版）
 
-> 当前真实实现的架构。v1.x 推迟的内容（GBNF、MCP、HTTP 鉴权）不在此文档。
+> 当前真实实现的架构。v1.2+ 推迟的内容（GBNF 完整版、MCP、分布式）不在此文档。
 
 ## 1. 一句话
 
 本地小模型优先的 Go 编码 agent，能自举开发（让模型自己写新工具）。
 
-**对比 opencode**：单二进制 / 4 第三方依赖 / 双 provider（Ollama + Anthropic）/ 双 toolcall 策略（Native + Prompted）/ Bubble Tea TUI / HTTP/SSE API。详见 [README.md §对比表](../README.md)。
+**对比 opencode**：单二进制 / 4 第三方依赖 / 双 provider（Ollama + Anthropic）/ **三 toolcall 策略**（Native + Prompted + Grammar）/ Bubble Tea TUI / **HTTP/SSE API + Bearer 鉴权 + 多 session**。详见 [README.md §对比表](../README.md)。
 
 ## 2. 分层
 
@@ -77,12 +77,13 @@ type Strategy interface {
 }
 ```
 
-**两个实现**（v1.0）：
+**三个实现**（v1.1）：
 
-| 策略 | 适用 | 文件 |
-|------|------|------|
-| **Native** | Ollama/Anthropic/OpenAI 自带 | `native.go` |
-| **Prompted** | 小模型（无原生 tool_call） | `prompted.go`，v1.0.5 |
+| 策略 | 适用 | 文件 | 版本 |
+|------|------|------|------|
+| **Native** | Ollama/Anthropic/OpenAI 自带 | `native.go` | v0.1 |
+| **Prompted** | 小模型（无原生 tool_call） | `prompted.go` | v1.0.5 |
+| **Grammar** | 同 Prompted + 严格 JSON Schema 验证 | `grammar.go` | v1.0.6 |
 
 ### 3.4 Bus
 
@@ -209,16 +210,31 @@ CREATE TABLE parts (id TEXT PK, message_id, session_id, type TEXT, data BLOB, ..
 
 关键：WAL + 单连接 + 毫秒精度 + `type` 列 + JSON BLOB。
 
-## 8. HTTP/SSE Server（v1.0.4）
+## 8. HTTP/SSE Server（v1.1）
 
-`./acorn --server=:8080` 启 HTTP：
+`./acorn --server=:8080 --api-key=secret` 启 HTTP。
 
-| 端点 | 方法 | 描述 |
-|------|------|------|
-| `/healthz` | GET | 健康检查 |
-| `/v1/chat` | POST | SSE 流响应 |
+### 端点
 
-**SSE 事件序列**：`session` → `text` ×N → `part` ×N（tool）→ `state` → `finish`。
+| 端点 | 方法 | 描述 | 鉴权 |
+|------|------|------|------|
+| `/healthz` | GET | 健康检查 | 否（k8s liveness） |
+| `/v1/sessions` | POST | 创建 session | 是 |
+| `/v1/sessions` | GET | 列出 session | 是 |
+| `/v1/sessions/{id}` | GET | session 详情 | 是 |
+| `/v1/sessions/{id}/chat` | POST | 续聊（SSE） | 是 |
+| `/v1/chat` | POST | 自动建 session + SSE（向后兼容） | 是 |
+
+### 鉴权（v1.1.1）
+
+- 启用：`--api-key=KEY` 或 `ACORN_API_KEY` env
+- 验证：`Authorization: Bearer <key>` 头
+- 失败：401 + `WWW-Authenticate: Bearer` 头
+- 用 `crypto/subtle.ConstantTimeCompare` 防 timing attack
+
+### SSE 事件序列
+
+`session` → `text` ×N → `part` ×N（tool）→ `state` → `finish`。
 
 `Permission.Ask` 在 server 模式无 publisher → fallback allow（headless 无 TUI）。
 
@@ -255,13 +271,14 @@ func (b *Broker) Ask(ctx, req) error {
 
 关键支撑：`AGENTS.md`（硬规则）/ 工具接口统一 / 错误回灌 / 测试当文档。
 
-## 11. v1.0 完整命令
+## 11. v1.1 完整命令
 
 ```
 acorn [model]
   --provider=NAME        ollama | anthropic（默认 ollama）
-  --toolcall=NAME        native | prompted（默认 native）
-  --server=ADDR          启 HTTP server（v1.0.4）
+  --toolcall=NAME        native | prompted | grammar（默认 native）
+  --server=ADDR          启 HTTP server（如 ":8080"）
+  --api-key=KEY          v1.1.1：HTTP Bearer 鉴权（也读 ACORN_API_KEY env）
   --db=path              SQLite 路径（默认 .acorncode.db）
 ```
 
@@ -273,17 +290,21 @@ acorn [model]
 - 单二进制 ~10MB
 - 模型学 1 个 stdlib + 4 API 比学 10 个第三方库快
 
-### D2 — ToolCall 双策略（v1.0 Native + Prompted）
+### D2 — ToolCall 三策略（v1.0 Native + Prompted，v1.0.6 Grammar）
 
-| 策略 | 适用 | 复杂度 |
-|------|------|--------|
-| Native | Ollama/Anthropic/OpenAI | 低（已实现） |
-| Prompted | 小模型（无 tool_call） | 中（已实现 v1.0.5） |
-| Grammar | llama.cpp GBNF | 中（推迟 v1.0.6） |
+| 策略 | 适用 | 复杂度 | 版本 |
+|------|------|--------|------|
+| Native | Ollama/Anthropic/OpenAI | 低 | v0.1 |
+| Prompted | 小模型（无 tool_call） | 中 | v1.0.5 |
+| Grammar | 同 Prompted + JSON Schema 验证 | 中 | v1.0.6 |
+
+完整 GBNF（llama.cpp 集成）推迟到 v1.3（需 schema→GBNF 转换器，~500 行）。
 
 ### D3 — 渐进式交付
 
-- v0.1 tracer bullet → v0.2 自举 → v0.3 配置化权限 → v0.4 TUI → v0.5 持久化 → v1.0 完整
+- v0.1 tracer bullet → v0.2 自举 → v0.3 配置化权限 → v0.4 TUI → v0.5 持久化
+- v1.0 完整版（5 增量：Permission 弹窗 / Anthropic / Compaction / HTTP API / Prompted）
+- v1.1 可上生产（HTTP 鉴权 + 多 session API）
 - 每次 1-2 周，最小可用单元
 - 始终保持 main 可跑 + 100% 测试
 

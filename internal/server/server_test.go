@@ -322,7 +322,10 @@ func TestServer_Auth_RequiresBearerWhenSet(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/v1/chat",
 		strings.NewReader(`{"message": "hi"}`))
 	req.Header.Set("Authorization", "Bearer wrong-key")
-	resp2, _ := http.DefaultClient.Do(req)
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp2.Body.Close()
 	if resp2.StatusCode != 401 {
 		t.Errorf("错 key 应 401, got %d", resp2.StatusCode)
@@ -331,7 +334,10 @@ func TestServer_Auth_RequiresBearerWhenSet(t *testing.T) {
 	req3, _ := http.NewRequest("POST", ts.URL+"/v1/chat",
 		strings.NewReader(`{"message": "hi"}`))
 	req3.Header.Set("Authorization", "Basic secret-key")
-	resp3, _ := http.DefaultClient.Do(req3)
+	resp3, err := http.DefaultClient.Do(req3)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp3.Body.Close()
 	if resp3.StatusCode != 401 {
 		t.Errorf("错 scheme 应 401, got %d", resp3.StatusCode)

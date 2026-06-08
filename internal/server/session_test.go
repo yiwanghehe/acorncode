@@ -206,7 +206,10 @@ func TestServer_Sessions_MethodNotAllowed(t *testing.T) {
 
 	// DELETE 不支持
 	req, _ := http.NewRequest("DELETE", ts.URL+"/v1/sessions", nil)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 405 {
 		t.Errorf("DELETE 应 405, got %d", resp.StatusCode)
