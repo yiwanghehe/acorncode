@@ -12,13 +12,24 @@ import (
 	"time"
 )
 
-// isWindowsSkip 标记：Windows 下 sh -c 的子进程不响应 SIGKILL，
-// 导致 cmd.Wait 阻塞，测试超时。这里跳过。
+// skipOnWindows 标记：Windows 下子进程对取消信号的响应不可靠
+// （sleep 类命令收不到等价 SIGKILL），导致 timeout/cancel 类测试不稳定，故跳过。
+// 注意：普通命令执行已支持 Windows（cmd /c 回退），这里仅针对超时/取消用例。
 func skipOnWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("Windows 下 sh -c 子进程不响应 SIGKILL（v0.1 限制）")
+		t.Skip("Windows 下子进程取消信号不可靠，跳过 timeout/cancel 用例")
 	}
+}
+
+// winShell 返回 true 表示当前 Windows 环境回退到了 cmd /c（PATH 上无 sh）。
+// 此时测试需用 cmd 语义的等价命令。
+func winShell() bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	shell, _ := resolveShell()
+	return shell == "cmd"
 }
 
 func TestBash_SimpleCommand(t *testing.T) {
@@ -47,7 +58,12 @@ func TestBash_SimpleCommand(t *testing.T) {
 func TestBash_WithStderr(t *testing.T) {
 	dir := t.TempDir()
 	b := &Bash{DefaultTimeoutSec: 5, Cwd: dir}
-	raw, _ := json.Marshal(BashArgs{Command: "echo to_out; echo to_err >&2"})
+	command := "echo to_out; echo to_err >&2"
+	if winShell() {
+		// cmd 语义：分号不分隔命令，用 & 链接；重定向语法相同
+		command = "echo to_out & echo to_err 1>&2"
+	}
+	raw, _ := json.Marshal(BashArgs{Command: command})
 
 	res, _ := b.Execute(context.Background(), raw, Context{Cwd: dir})
 	if res.Status != "success" {
@@ -64,7 +80,11 @@ func TestBash_WithStderr(t *testing.T) {
 func TestBash_NonZeroExit(t *testing.T) {
 	dir := t.TempDir()
 	b := &Bash{DefaultTimeoutSec: 5, Cwd: dir}
-	raw, _ := json.Marshal(BashArgs{Command: "false"}) // exit 1
+	command := "false" // exit 1
+	if winShell() {
+		command = "exit /b 1"
+	}
+	raw, _ := json.Marshal(BashArgs{Command: command})
 
 	res, _ := b.Execute(context.Background(), raw, Context{Cwd: dir})
 	// v0.1 设计：非零退出仍返 success，让模型看 stderr 自然修复
@@ -82,12 +102,15 @@ func TestBash_CommandNotFound(t *testing.T) {
 	raw, _ := json.Marshal(BashArgs{Command: "nonexistent_command_xyz"})
 
 	res, _ := b.Execute(context.Background(), raw, Context{Cwd: dir})
-	// v0.1: 非零退出返 success，stderr 应含 not found
+	// v0.1: 非零退出返 success，stderr 应含 not found / not recognized
 	if res.Status != "success" {
 		t.Errorf("Status = %q", res.Status)
 	}
-	if !strings.Contains(res.Output, "not found") && !strings.Contains(res.Output, "command not found") {
-		t.Errorf("Output 应含 'not found': %s", res.Output)
+	// sh: "not found" / "command not found"；cmd: "is not recognized"
+	if !strings.Contains(res.Output, "not found") &&
+		!strings.Contains(res.Output, "command not found") &&
+		!strings.Contains(res.Output, "not recognized") {
+		t.Errorf("Output 应含命令未找到提示: %s", res.Output)
 	}
 }
 
@@ -142,7 +165,13 @@ func TestBash_LongOutputTruncated(t *testing.T) {
 		Cwd:               dir,
 	}
 	// 输出 100KB
-	raw, _ := json.Marshal(BashArgs{Command: "yes a | head -c 100000"})
+	command := "yes a | head -c 100000"
+	if winShell() {
+		// cmd 无 yes/head；用 PowerShell 重复字符串生成 100000 个字符
+		// 注意：不加内层引号，避免 cmd /c 的引号解析吞掉表达式
+		command = `powershell -NoProfile -Command [string]::new('a',100000)`
+	}
+	raw, _ := json.Marshal(BashArgs{Command: command})
 
 	res, _ := b.Execute(context.Background(), raw, Context{Cwd: dir})
 	if res.Status != "success" {
@@ -162,7 +191,12 @@ func TestBash_LongOutputTruncated(t *testing.T) {
 func TestBash_Pipes(t *testing.T) {
 	dir := t.TempDir()
 	b := &Bash{DefaultTimeoutSec: 5, Cwd: dir}
-	raw, _ := json.Marshal(BashArgs{Command: "echo foo | grep foo && echo matched"})
+	command := "echo foo | grep foo && echo matched"
+	if winShell() {
+		// cmd: findstr 等价 grep，&& 语义相同
+		command = "echo foo | findstr foo && echo matched"
+	}
+	raw, _ := json.Marshal(BashArgs{Command: command})
 
 	res, _ := b.Execute(context.Background(), raw, Context{Cwd: dir})
 	if res.Status != "success" {
@@ -255,7 +289,12 @@ func TestBash_CwdRespected(t *testing.T) {
 	}
 
 	b := &Bash{DefaultTimeoutSec: 5, Cwd: dir}
-	raw, _ := json.Marshal(BashArgs{Command: "ls marker.txt"})
+	command := "ls marker.txt"
+	if winShell() {
+		// 在 subdir 列出 marker.txt 验证 cwd（cd 进 subdir 再列）
+		command = "cd sub && dir /b marker.txt"
+	}
+	raw, _ := json.Marshal(BashArgs{Command: command})
 
 	res, _ := b.Execute(context.Background(), raw, Context{Cwd: dir})
 	if res.Status != "success" {
@@ -275,9 +314,12 @@ func TestBash_ContextCwdOverride(t *testing.T) {
 	}
 
 	b := &Bash{DefaultTimeoutSec: 5, Cwd: dir1} // b.Cwd = dir1
-	raw, _ := json.Marshal(BashArgs{Command: "ls tc.txt"})
-
-	// tc.Cwd = dir2 应覆盖
+	command := "ls tc.txt"
+	if winShell() {
+		command = "dir /b tc.txt"
+	}
+	raw, _ := json.Marshal(BashArgs{Command: command})
+	// tc.Cwd = dir2 应覆盖 b.Cwd = dir1
 	res, _ := b.Execute(context.Background(), raw, Context{Cwd: dir2})
 	if res.Status != "success" {
 		t.Errorf("Status = %q", res.Status)

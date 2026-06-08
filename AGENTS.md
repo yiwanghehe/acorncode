@@ -66,8 +66,10 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 | 6 | SQLite 写锁竞争 | WAL + `SetMaxOpenConns(1)` |
 | 7 | NDJSON 一行坏杀整流 | `slog.Warn` 跳过 |
 | 8 | 测试 `select {}` 卡 Close | `<-r.Context().Done()` |
-| 9 | Windows sh 不响应 SIGKILL | `if runtime.GOOS == "windows" { t.Skip(...) }` |
+| 9 | Windows sh 不响应 SIGKILL | `if runtime.GOOS == "windows" { t.Skip(...) }`（仅 timeout/cancel 用例） |
 | 10 | Bash 长输出爆内存 | 头尾各半（50KB 总） |
+| 11 | Bash 硬编码 `sh -c` 在纯 Windows 跑不了 | `resolveShell()` 按平台选：Unix=`sh -c`；Windows 有 sh 用 `sh -c`，否则 `cmd /c`（v1.1.3） |
+| 12 | cmd `/c` 调 powershell 内层引号被吞 | 表达式不要加内层双引号，如 `powershell -Command [string]::new('a',N)` |
 
 ## 4. 跑命令
 

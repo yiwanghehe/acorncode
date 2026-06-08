@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"acorncode/internal/permission"
@@ -36,7 +38,8 @@ type Bash struct {
 func (b *Bash) Definition() Definition {
 	return Definition{
 		ID: "bash",
-		Description: "Execute a shell command via 'sh -c'. " +
+		Description: "Execute a shell command. On Unix uses 'sh -c'; on Windows uses 'sh -c' " +
+			"if a POSIX shell (Git Bash/WSL) is on PATH, otherwise falls back to 'cmd /c'. " +
 			"Returns combined stdout/stderr/exit code/timing. " +
 			"Non-zero exit does NOT fail the tool call — output is fed back to the model so it can fix issues. " +
 			"Default timeout 30s. Use for builds, tests, git, etc. " +
@@ -97,11 +100,14 @@ func (b *Bash) Execute(ctx context.Context, args json.RawMessage, tc Context) (R
 	cmdCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	// 3. 执行命令
-	cmd := exec.CommandContext(cmdCtx, "sh", "-c", a.Command)
-	cwd := b.Cwd
+	// 3. 执行命令（跨平台：Unix 用 sh -c；Windows 优先 sh（Git Bash/WSL），
+	//    无 sh 时回退 cmd /c，保证纯 Windows 环境也能跑）
+	shell, flag := resolveShell()
+	cmd := exec.CommandContext(cmdCtx, shell, flag, a.Command)
+	// cwd 优先级：每次调用的 tc.Cwd > 工具级默认 b.Cwd
+	cwd := tc.Cwd
 	if cwd == "" {
-		cwd = tc.Cwd
+		cwd = b.Cwd
 	}
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -215,4 +221,31 @@ func truncateForID(s string) string {
 		return s[:50]
 	}
 	return s
+}
+
+// shellOnce 缓存 Windows 下的 sh 探测结果，避免每次执行都查 PATH
+var shellOnce struct {
+	sync.Once
+	hasSh bool
+}
+
+// resolveShell 返回当前平台用于执行命令的 shell 及其「执行字符串」参数。
+//   - 非 Windows：固定 ("sh", "-c")
+//   - Windows：若 PATH 上有 POSIX shell（Git Bash / WSL 的 sh），用 ("sh", "-c")
+//     以保持 Unix 命令语义；否则回退 ("cmd", "/c")
+//
+// Windows 探测结果用 sync.Once 缓存（PATH 在进程生命周期内基本不变）。
+func resolveShell() (shell, flag string) {
+	if runtime.GOOS != "windows" {
+		return "sh", "-c"
+	}
+	shellOnce.Do(func() {
+		if _, err := exec.LookPath("sh"); err == nil {
+			shellOnce.hasSh = true
+		}
+	})
+	if shellOnce.hasSh {
+		return "sh", "-c"
+	}
+	return "cmd", "/c"
 }

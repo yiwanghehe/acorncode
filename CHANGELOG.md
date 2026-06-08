@@ -16,6 +16,11 @@ v1.0 完整版上加 2 个能力，让 server 模式可上生产。
   - `GET /v1/sessions` → 列表
   - `GET /v1/sessions/{id}` → 详情
   - `POST /v1/sessions/{id}/chat` → 续聊（多轮对话）
+- **v1.1.3 Bash 工具跨平台**：
+  - `resolveShell()` 按平台选 shell：Unix 用 `sh -c`；Windows 优先 POSIX shell（Git Bash/WSL），无则回退 `cmd /c`（探测结果用 `sync.Once` 缓存）
+  - 修正 cwd 优先级：每次调用的 `tc.Cwd` 覆盖工具级默认 `b.Cwd`（原逻辑反了，被 Unix 错误消息巧合掩盖）
+  - bash 测试改为平台自适应：Windows 回退 cmd 时用等价命令（`findstr`/`dir`/`cmd` 语法）
+  - 普通命令执行现已支持纯 Windows 环境；仅 timeout/cancel 用例仍在 Windows 跳过
 
 **向后兼容**：原 `/v1/chat` 仍可用（自动创建 session），不破现有客户端。
 

@@ -166,7 +166,8 @@ curl -X POST http://localhost:8080/v1/sessions/sess_xxx/chat \
 - TUI 模式必须从 TTY 跑（CI 用 server 模式）
 - HTTP server 模式 Permission ask 默认 allow（headless 无 TUI）
 - WebFetch 默认禁私有 IP（含 AWS metadata 169.254/16）
-- Windows bash timeout 测试跳过
+- **Bash 工具跨平台**（v1.1.3）：Unix 用 `sh -c`；Windows 有 POSIX shell（Git Bash/WSL）则用 `sh -c`，否则回退 `cmd /c`。纯 Windows 环境下需用 cmd 语义命令
+- Bash 的 timeout/cancel 测试在 Windows 跳过（子进程取消信号不可靠）
 
 ## 关键设计决策
 
