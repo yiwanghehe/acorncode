@@ -1,10 +1,10 @@
 # AcornCode
 
-> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.3**
+> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.4**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/)
-[![Tests 283](https://img.shields.io/badge/tests-283%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
+[![Tests 287](https://img.shields.io/badge/tests-287%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
 
 AcornCode 是一个**纯 Go 原生**的 coding agent，类似 [opencode](https://github.com/sst/opencode) 但做了关键简化：
 
@@ -81,6 +81,7 @@ make e2e               # 端到端（需本地 ollama）
 | **Prompted toolcall** 策略（v1.0.5） | `internal/toolcall/prompted.go` | 8 |
 | **Grammar toolcall** 策略（v1.0.6） | `internal/toolcall/grammar.go` | 11 |
 | **schema→GBNF 转换器**（v1.3，约束生成） | `internal/toolcall/gbnf.go` | 19 |
+| **Provider 约束生成**（v1.4，Ollama `format` + Prepare 接线修复） | `internal/llm/ollama.go` | +2 |
 | Agent Loop（8 状态 + 3 熔断） | `internal/agent/loop.go` | 5 集成 |
 | **Compaction**（v1.0.3） | `internal/compaction/simple.go` | 6 |
 | **Permission ask 弹窗**（v1.0.1） | `internal/permission/broker.go` | 22 |
@@ -98,7 +99,7 @@ make e2e               # 端到端（需本地 ollama）
 | **MCP stdio Client**（v1.2，让模型调外部工具） | `internal/mcp/client.go` | 15 |
 | CLI（TTY 检测 + 6 flag） | `cmd/acorn/main.go` | 11 |
 
-**总计**：**283 测试**，< 5 秒。**4 第三方依赖**（MCP / GBNF 均 0 新依赖，纯 stdlib）。
+**总计**：**287 测试**，< 5 秒。**4 第三方依赖**（MCP / GBNF 均 0 新依赖，纯 stdlib）。
 
 ## 当前状态
 

@@ -266,3 +266,45 @@ func TestGrammar_PrepareInjectsSystemPrompt(t *testing.T) {
 		t.Errorf("system 应含 tool_call 说明:\n%s", joined)
 	}
 }
+
+// TestGrammar_ForceToolCall_SetsFormat 验证 v1.4：开启 ForceToolCall 后设置 req.Format。
+func TestGrammar_ForceToolCall_SetsFormat(t *testing.T) {
+	g := NewGrammar()
+	g.ForceToolCall = true
+	req := &llm.ChatRequest{}
+	if err := g.Prepare(req, grammarTestTools()); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if len(req.Format) == 0 {
+		t.Fatal("ForceToolCall=true 应设置 req.Format")
+	}
+	// Format 应是合法 JSON Schema，含 name 的 enum（工具 ID）
+	var schema struct {
+		Type       string `json:"type"`
+		Properties struct {
+			Name struct {
+				Enum []string `json:"enum"`
+			} `json:"name"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(req.Format, &schema); err != nil {
+		t.Fatalf("Format 应是合法 JSON: %v", err)
+	}
+	if schema.Type != "object" {
+		t.Errorf("Format.type = %q, 期望 object", schema.Type)
+	}
+	if len(schema.Properties.Name.Enum) != 2 {
+		t.Errorf("name.enum 应含 2 个工具, got %v", schema.Properties.Name.Enum)
+	}
+}
+
+// TestGrammar_NoForce_NoFormat 验证默认不强制：不设置 req.Format（向后兼容）。
+func TestGrammar_NoForce_NoFormat(t *testing.T) {
+	g := NewGrammar()
+	req := &llm.ChatRequest{}
+	_ = g.Prepare(req, grammarTestTools())
+	if len(req.Format) != 0 {
+		t.Errorf("默认 ForceToolCall=false 不应设置 Format, got %s", req.Format)
+	}
+}

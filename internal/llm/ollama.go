@@ -115,6 +115,8 @@ type ollamaRequest struct {
 	Stream   bool            `json:"stream"`
 	Tools    []ollamaTool    `json:"tools,omitempty"`
 	Options  map[string]any  `json:"options,omitempty"`
+	// Format 是结构化输出约束（v1.4）：Ollama 支持传 JSON Schema 强制输出格式。
+	Format json.RawMessage `json:"format,omitempty"`
 }
 
 type ollamaMessage struct {
@@ -148,6 +150,7 @@ func (o *Ollama) buildRequestBody(req ChatRequest) ([]byte, error) {
 	body := ollamaRequest{
 		Model:  firstNonEmpty(req.Model.ID, o.cfg.Model),
 		Stream: true,
+		Format: req.Format, // v1.4：结构化输出约束（为空则 omitempty 不发）
 	}
 
 	// system prompt：多条用双换行拼接

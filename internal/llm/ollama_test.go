@@ -297,6 +297,65 @@ func TestOllama_Stream_RequestBody(t *testing.T) {
 	}
 }
 
+// TestOllama_Stream_FormatForwarded 验证 v1.4：ChatRequest.Format 转发到 Ollama format 字段。
+func TestOllama_Stream_FormatForwarded(t *testing.T) {
+	var capturedBody []byte
+	o, _ := newTestOllama(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		writeNDJSON(w,
+			`{"model":"x","message":{"role":"assistant","content":"{}"},"done":true,"done_reason":"stop","eval_count":1,"prompt_eval_count":1}`,
+		)
+	})
+
+	formatSchema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	req := ChatRequest{
+		Model:   Model{ID: "qwen2.5-coder:7b"},
+		History: []Message{{Role: "user", Content: "hi"}},
+		Format:  formatSchema,
+	}
+	ch, _ := o.Stream(context.Background(), req)
+	for range ch {
+	}
+
+	var got struct {
+		Format json.RawMessage `json:"format"`
+	}
+	if err := json.Unmarshal(capturedBody, &got); err != nil {
+		t.Fatalf("解析 body 失败: %v", err)
+	}
+	if len(got.Format) == 0 {
+		t.Fatal("format 字段应被转发")
+	}
+	var fs struct {
+		Type     string   `json:"type"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(got.Format, &fs); err != nil {
+		t.Fatalf("format 应是合法 JSON: %v", err)
+	}
+	if fs.Type != "object" {
+		t.Errorf("format.type = %q, 期望 object", fs.Type)
+	}
+}
+
+// TestOllama_Stream_NoFormat 验证不设 Format 时 body 里无 format 字段（omitempty）。
+func TestOllama_Stream_NoFormat(t *testing.T) {
+	var capturedBody []byte
+	o, _ := newTestOllama(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		writeNDJSON(w,
+			`{"model":"x","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop","eval_count":1,"prompt_eval_count":1}`,
+		)
+	})
+	req := ChatRequest{Model: Model{ID: "x"}, History: []Message{{Role: "user", Content: "hi"}}}
+	ch, _ := o.Stream(context.Background(), req)
+	for range ch {
+	}
+	if strings.Contains(string(capturedBody), `"format"`) {
+		t.Errorf("无 Format 时不应出现 format 字段: %s", capturedBody)
+	}
+}
+
 // TestOllama_Stream_BearerAuth 验证 APIKey 走 Authorization: Bearer
 func TestOllama_Stream_BearerAuth(t *testing.T) {
 	var gotAuth string

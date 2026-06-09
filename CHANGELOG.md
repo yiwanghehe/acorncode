@@ -2,6 +2,32 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.4.0] - 2026-06
+
+### Provider 约束生成 + 修复 strategy.Prepare 接线
+
+让 v1.0.5/v1.0.6/v1.3 的 toolcall 策略真正端到端生效。
+
+**修复（关键）**：
+
+- **strategy.Prepare 从未被调用**：`agent.Loop.buildRequest` 之前直接构造 `ChatRequest`
+  却没调 `l.strategy.Prepare()`，导致 Prompted/Grammar 策略注入的 system 工具说明、
+  v1.3 的 GBNF 生成**全部没生效**。现在 `buildRequest` 末尾调用 `Prepare(req, pickedTools)`，
+  Native 策略为 no-op，向后兼容。
+
+**新增**：
+
+- **`ChatRequest.Format`**（JSON Schema）：结构化输出约束字段，为空时不约束
+- **Ollama 转发 `format`**：`ollamaRequest` 加 `format,omitempty`，把 `req.Format`
+  转发给 Ollama 的结构化输出能力，在解码阶段强制 JSON 格式
+- **`Grammar.ForceToolCall`**（默认 false）：开启后 `Prepare` 自动构造「工具调用 wrapper」
+  JSON Schema（`{name: enum<tool IDs>, arguments: object}`）并设置 `req.Format`，
+  强制模型输出合法工具调用。默认关闭保持自由文本 + 工具混合输出，向后兼容。
+
+**测试**：grammar +2（ForceToolCall/NoForce）、ollama +2（Format 转发/省略）。
+
+**总计**：287 测试。
+
 ## [1.3.0] - 2026-06
 
 ### Grammar GBNF 完整版（schema→GBNF 约束生成）
@@ -123,9 +149,10 @@ v1.0 完整版上加 2 个能力，让 server 模式可上生产。
 
 ## 计划 (v1.x)
 
-- v1.4：provider 层接入 GBNF（Ollama format / llama.cpp grammar 字段）做真约束
+- v1.5：Anthropic 结构化输出（tool_choice 强制）对齐 Ollama format
 - v2：分布式部署
 
+[1.4.0]: https://github.com/yiwanghehe/acorncode/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/yiwanghehe/acorncode/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/yiwanghehe/acorncode/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/yiwanghehe/acorncode/compare/v1.0.0...v1.1.0

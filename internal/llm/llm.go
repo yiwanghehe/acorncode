@@ -35,6 +35,11 @@ type ChatRequest struct {
 	System  []string
 	Tools   []Definition
 	History []Message
+
+	// Format 是可选的结构化输出约束（JSON Schema）。
+	// v1.4：Grammar 策略可设置它，让支持的 provider（Ollama 的 `format` 字段）
+	// 在解码阶段强制输出符合该 schema 的 JSON。为空时不约束。
+	Format json.RawMessage
 }
 
 // Definition 描述一个工具

@@ -268,6 +268,15 @@ func (l *Loop) buildRequest(ctx context.Context, userMsg *session.UserMessage) (
 		})
 	}
 
+	// 8. 让 toolcall 策略预处理请求（v1.4 修复接线）。
+	//    Prompted/Grammar 借此注入 system 工具说明；Grammar 还会生成 GBNF
+	//    并按需设置 req.Format 做约束生成。Native 策略为 no-op。
+	if l.strategy != nil {
+		if err := l.strategy.Prepare(req, pickedTools); err != nil {
+			slog.WarnContext(ctx, "strategy.Prepare 失败", "strategy", l.strategy.Name(), "err", err)
+		}
+	}
+
 	return req, nil
 }
 

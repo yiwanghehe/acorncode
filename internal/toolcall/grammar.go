@@ -28,6 +28,11 @@ type Grammar struct {
 	callSeq  atomic.Uint64
 	tools    []tool.Definition // Prepare 时存
 	grammars map[string]string // tool ID → 该工具 arguments 的 GBNF
+
+	// ForceToolCall 为 true 时，Prepare 会设置 req.Format（JSON Schema），
+	// 强制 provider（Ollama format）输出符合「工具调用 wrapper」的 JSON。
+	// 默认 false：保持自由文本 + 工具调用混合输出，向后兼容。
+	ForceToolCall bool
 }
 
 // NewGrammar 创建 Grammar 策略
@@ -73,7 +78,46 @@ func (g *Grammar) Prepare(req *llm.ChatRequest, tools []tool.Definition) error {
 	sb.WriteString("</tool_call>\n")
 
 	req.System = append(req.System, sb.String())
+
+	// v1.4：可选强制工具调用——设置 req.Format 让 Ollama 约束输出为合法工具调用 JSON。
+	if g.ForceToolCall {
+		if format := g.buildToolCallFormat(); format != nil {
+			req.Format = format
+		}
+	}
 	return nil
+}
+
+// buildToolCallFormat 构造「工具调用 wrapper」的 JSON Schema：
+//
+//	{ "name": <enum of tool IDs>, "arguments": object }
+//
+// 用作 Ollama 的 format 字段，强制模型输出形如
+// {"name":"read","arguments":{...}} 的合法工具调用 JSON。
+// 无工具时返回 nil（不约束）。
+func (g *Grammar) buildToolCallFormat() json.RawMessage {
+	if len(g.tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(g.tools))
+	for _, t := range g.tools {
+		names = append(names, t.ID)
+	}
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":      map[string]any{"type": "string", "enum": names},
+			"arguments": map[string]any{"type": "object"},
+		},
+		"required":             []string{"name", "arguments"},
+		"additionalProperties": false,
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		slog.Warn("grammar: 构造 tool-call format 失败", "err", err)
+		return nil
+	}
+	return raw
 }
 
 // Grammars 返回每个工具 arguments 的 GBNF 语法（tool ID → GBNF）。
