@@ -32,12 +32,23 @@ import (
 )
 
 func main() {
-	modelName, dbPath, providerName, serverAddr, toolcallStrat, apiKey := parseArgs(os.Args[1:])
+	args := parseArgs(os.Args[1:])
 
-	if err := run(modelName, dbPath, providerName, serverAddr, toolcallStrat, apiKey); err != nil {
+	if err := run(args); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// cliArgs 是解析后的命令行参数（v1.6 起用 struct，避免长参数列表）。
+type cliArgs struct {
+	ModelName     string
+	DBPath        string
+	ProviderName  string
+	ServerAddr    string
+	ToolcallStrat string
+	APIKey        string
+	ForceToolCall bool // v1.6：强制工具调用（仅 grammar 策略生效）
 }
 
 // parseArgs 解析 CLI 参数
@@ -47,33 +58,45 @@ func main() {
 //	--server=ADDR          启 HTTP server（v1.0.4；如 ":8080"），默认不起
 //	--toolcall=NAME        toolcall 策略（native | prompted | grammar，默认 native）
 //	--api-key=KEY          v1.1.1：HTTP 鉴权（也读 ACORN_API_KEY env）
+//	--force-tool           v1.6：强制工具调用（grammar 策略 + provider 约束）
 //	[model]                模型名（默认 qwen2.5-coder:7b）
-func parseArgs(args []string) (modelName, dbPath, providerName, serverAddr, toolcallStrat, apiKey string) {
-	modelName = "qwen2.5-coder:7b"
-	dbPath = ".acorncode.db"
-	providerName = "ollama"
-	toolcallStrat = "native"
-	apiKey = os.Getenv("ACORN_API_KEY") // env 兜底
+func parseArgs(args []string) cliArgs {
+	a := cliArgs{
+		ModelName:     "qwen2.5-coder:7b",
+		DBPath:        ".acorncode.db",
+		ProviderName:  "ollama",
+		ToolcallStrat: "native",
+		APIKey:        os.Getenv("ACORN_API_KEY"), // env 兜底
+	}
 	for _, arg := range args {
 		switch {
 		case strings.HasPrefix(arg, "--db="):
-			dbPath = strings.TrimPrefix(arg, "--db=")
+			a.DBPath = strings.TrimPrefix(arg, "--db=")
 		case strings.HasPrefix(arg, "--provider="):
-			providerName = strings.TrimPrefix(arg, "--provider=")
+			a.ProviderName = strings.TrimPrefix(arg, "--provider=")
 		case strings.HasPrefix(arg, "--server="):
-			serverAddr = strings.TrimPrefix(arg, "--server=")
+			a.ServerAddr = strings.TrimPrefix(arg, "--server=")
 		case strings.HasPrefix(arg, "--toolcall="):
-			toolcallStrat = strings.TrimPrefix(arg, "--toolcall=")
+			a.ToolcallStrat = strings.TrimPrefix(arg, "--toolcall=")
 		case strings.HasPrefix(arg, "--api-key="):
-			apiKey = strings.TrimPrefix(arg, "--api-key=")
+			a.APIKey = strings.TrimPrefix(arg, "--api-key=")
+		case arg == "--force-tool":
+			a.ForceToolCall = true
 		case !strings.HasPrefix(arg, "-"):
-			modelName = arg
+			a.ModelName = arg
 		}
 	}
-	return
+	return a
 }
 
-func run(modelName, dbPath, providerName, serverAddr, toolcallStrat, apiKey string) error {
+func run(args cliArgs) error {
+	modelName := args.ModelName
+	dbPath := args.DBPath
+	providerName := args.ProviderName
+	serverAddr := args.ServerAddr
+	toolcallStrat := args.ToolcallStrat
+	apiKey := args.APIKey
+
 	// 0. TTY 检测（v0.6 整合）：无 TTY 时 TUI 起不来，给清晰错误
 	// 例外：--server 模式不需要 TTY
 	if serverAddr == "" && !isTTY() {
@@ -128,9 +151,19 @@ func run(modelName, dbPath, providerName, serverAddr, toolcallStrat, apiKey stri
 	case "prompted":
 		strategy = toolcall.NewPrompted()
 	case "grammar":
-		strategy = toolcall.NewGrammar()
+		g := toolcall.NewGrammar()
+		if args.ForceToolCall {
+			g.ForceToolCall = true
+			fmt.Fprintf(os.Stderr, "[强制工具调用: 已启用（grammar）]\n")
+		}
+		strategy = g
 	default:
 		return fmt.Errorf("未知 toolcall 策略: %s（支持 native / prompted / grammar）", toolcallStrat)
+	}
+
+	// v1.6：--force-tool 仅对 grammar 策略生效，其余策略给出提示
+	if args.ForceToolCall && toolcallStrat != "grammar" {
+		fmt.Fprintf(os.Stderr, "[警告: --force-tool 仅 grammar 策略生效，当前策略 %q 已忽略]\n", toolcallStrat)
 	}
 
 	// 3. Tool registry

@@ -2,6 +2,24 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.0] - 2026-06
+
+### --force-tool CLI flag（暴露强制工具调用）
+
+把 v1.4/v1.5 的 `Grammar.ForceToolCall` 能力暴露给终端用户。
+
+**新增**：
+
+- **`--force-tool` flag**：开启后 grammar 策略强制工具调用
+  （Ollama 走 `format` 约束 + Anthropic 走 `tool_choice=any`）。
+  仅对 `--toolcall=grammar` 生效，其余策略给出忽略提示
+- **`parseArgs` 重构为 `cliArgs` struct**：替代 6 个位置返回值，加字段不再破坏调用方，
+  更易扩展（这也修复了「位置返回值随版本增长越来越脆」的可维护性问题）
+
+**测试**：cmd +2（--force-tool 解析 / 默认关闭）；TestParseArgs 改造为 struct 断言。
+
+**总计**：293 测试。
+
 ## [1.5.0] - 2026-06
 
 ### Anthropic 结构化输出（tool_choice 强制）
@@ -170,9 +188,10 @@ v1.0 完整版上加 2 个能力，让 server 模式可上生产。
 
 ## 计划 (v1.x)
 
-- v1.6：Loop 暴露 ForceToolCall 开关（CLI flag / 配置），让用户按需开启强制工具调用
+- v1.7：HTTP server 也支持 force-tool（请求级开关）
 - v2：分布式部署
 
+[1.6.0]: https://github.com/yiwanghehe/acorncode/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/yiwanghehe/acorncode/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/yiwanghehe/acorncode/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/yiwanghehe/acorncode/compare/v1.2.0...v1.3.0
