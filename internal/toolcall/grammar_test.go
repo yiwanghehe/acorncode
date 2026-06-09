@@ -3,6 +3,7 @@ package toolcall
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"acorncode/internal/llm"
@@ -226,5 +227,42 @@ func TestGrammar_NoTools_NoEmit(t *testing.T) {
 func TestGrammar_Name(t *testing.T) {
 	if NewGrammar().Name() != "grammar" {
 		t.Errorf("Name 应是 'grammar'")
+	}
+}
+
+// TestGrammar_PrepareGeneratesGBNF 验证 v1.3：Prepare 后每个工具都有 GBNF。
+func TestGrammar_PrepareGeneratesGBNF(t *testing.T) {
+	g := NewGrammar()
+	req := &llm.ChatRequest{}
+	if err := g.Prepare(req, grammarTestTools()); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	grammars := g.Grammars()
+	if len(grammars) != 2 {
+		t.Fatalf("应为 2 个工具生成 GBNF, got %d", len(grammars))
+	}
+	readGBNF, ok := grammars["read"]
+	if !ok {
+		t.Fatal("缺 read 的 GBNF")
+	}
+	if !strings.HasPrefix(readGBNF, "root ::= ") {
+		t.Errorf("GBNF 应以 root 开头:\n%s", readGBNF)
+	}
+	if !strings.Contains(readGBNF, `"path"`) {
+		t.Errorf("read GBNF 应含 path 属性:\n%s", readGBNF)
+	}
+}
+
+// TestGrammar_PrepareInjectsSystemPrompt 验证 v1.3：Prepare 注入 system 引导。
+func TestGrammar_PrepareInjectsSystemPrompt(t *testing.T) {
+	g := NewGrammar()
+	req := &llm.ChatRequest{}
+	_ = g.Prepare(req, grammarTestTools())
+	if len(req.System) == 0 {
+		t.Fatal("Prepare 应注入 system prompt")
+	}
+	joined := strings.Join(req.System, "\n")
+	if !strings.Contains(joined, "<tool_call>") {
+		t.Errorf("system 应含 tool_call 说明:\n%s", joined)
 	}
 }

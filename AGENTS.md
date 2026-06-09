@@ -2,7 +2,7 @@
 
 > 必读。新加 tool、发现新坑、改动代码风格，**立即**更新本文件。
 >
-> 当前 **v1.2**：6 个内置 tool + MCP 外部工具 + 3 toolcall 策略 + HTTP 鉴权 + 多 session + **262 测试**。详见 [README.md](README.md) §已实现。
+> 当前 **v1.3**：6 个内置 tool + MCP 外部工具 + 3 toolcall 策略（Grammar 含 schema→GBNF）+ HTTP 鉴权 + 多 session + **283 测试**。详见 [README.md](README.md) §已实现。
 
 ## 1. 硬规则
 

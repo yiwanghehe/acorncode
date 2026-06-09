@@ -1,11 +1,13 @@
 // Package toolcall - grammar.go
 //
-// Grammar 策略（v1.0.6）= Prompted + JSON Schema 验证。
+// Grammar 策略 = Prompted + JSON Schema 验证 + GBNF 约束生成。
 // 解析 `<tool_call>{...}</tool_call>` 块，对 name / arguments 做严格校验。
 // 失败时不 emit 工具调用（让 Loop 走 tool 错误路径，模型看到 stderr 重试）。
 //
-// **v1.0.6 范围**：JSON Schema 验证（无 GBNF 生成）。
-// **v1.0.7 计划**：完整 schema→GBNF 转换器 + Ollama `format` 字段约束。
+// **v1.0.6**：JSON Schema 事后验证（validateCall）。
+// **v1.3**：新增 schema→GBNF 转换器（gbnf.go）。Prepare 时为每个工具生成 GBNF
+// 并把它们注入 system prompt，让支持 GBNF 的后端（llama.cpp/Ollama）在解码阶段
+// 「强制」约束输出。Grammars() 暴露生成结果供 provider 层取用。
 package toolcall
 
 import (
@@ -21,27 +23,67 @@ import (
 	"acorncode/internal/tool"
 )
 
-// Grammar 是带 JSON Schema 验证的 Prompted 变体
+// Grammar 是带 JSON Schema 验证 + GBNF 约束的 Prompted 变体
 type Grammar struct {
-	callSeq atomic.Uint64
-	tools   []tool.Definition // Prepare 时存
+	callSeq  atomic.Uint64
+	tools    []tool.Definition // Prepare 时存
+	grammars map[string]string // tool ID → 该工具 arguments 的 GBNF
 }
 
 // NewGrammar 创建 Grammar 策略
 func NewGrammar() *Grammar {
-	return &Grammar{}
+	return &Grammar{grammars: make(map[string]string)}
 }
 
 // Name 返回 strategy 名
 func (g *Grammar) Name() string { return "grammar" }
 
-// Prepare 存 tool defs（v1.0.6 仅存，不注入 system prompt）
+// Prepare 存 tool defs、生成每个工具的 GBNF 并注入 system prompt。
 //
-// v1.0.6 不修改 system prompt：schema 验证在 ParseStream 时做。
-// v1.0.7 起会拼 schema 到 system prompt 让模型预先知道。
+// v1.3：除了把工具说明写进 system prompt（同 Prompted），还为每个工具的
+// arguments schema 生成 GBNF 语法，存入 g.grammars 供 provider 约束生成。
 func (g *Grammar) Prepare(req *llm.ChatRequest, tools []tool.Definition) error {
 	g.tools = tools
+	if g.grammars == nil {
+		g.grammars = make(map[string]string)
+	}
+	if len(tools) == 0 {
+		return nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("You have access to the following tools. To call a tool, output a JSON block wrapped in <tool_call></tool_call> tags. The arguments MUST strictly match the given JSON schema:\n\n")
+	for _, t := range tools {
+		sb.WriteString(fmt.Sprintf("- %s: %s\n", t.ID, t.Description))
+		if len(t.JSONSchema) > 0 {
+			sb.WriteString(fmt.Sprintf("  Arguments schema: %s\n", string(t.JSONSchema)))
+			// v1.3：生成并缓存该工具 arguments 的 GBNF（失败不致命，仅记日志）
+			gbnf, err := SchemaToGBNF(t.JSONSchema)
+			if err != nil {
+				slog.Warn("grammar: GBNF 生成失败，降级纯 prompted", "tool", t.ID, "err", err)
+			} else {
+				g.grammars[t.ID] = gbnf
+			}
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("Example:\n")
+	sb.WriteString("<tool_call>\n")
+	sb.WriteString(`{"name": "tool_id", "arguments": {"arg1": "value"}}` + "\n")
+	sb.WriteString("</tool_call>\n")
+
+	req.System = append(req.System, sb.String())
 	return nil
+}
+
+// Grammars 返回每个工具 arguments 的 GBNF 语法（tool ID → GBNF）。
+// provider 层可用它对解码做约束（如 llama.cpp 的 grammar / Ollama 的 format）。
+func (g *Grammar) Grammars() map[string]string {
+	out := make(map[string]string, len(g.grammars))
+	for k, v := range g.grammars {
+		out[k] = v
+	}
+	return out
 }
 
 var (

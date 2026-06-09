@@ -2,6 +2,31 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.3.0] - 2026-06
+
+### Grammar GBNF 完整版（schema→GBNF 约束生成）
+
+把 Grammar 策略从「事后 JSON Schema 验证」升级到「解码期约束生成」：
+新增 `internal/toolcall/gbnf.go` 转换器，把 JSON Schema 转成 GBNF（GGML BNF）语法，
+让支持 GBNF 的后端（llama.cpp / Ollama）在生成阶段就强制输出符合 schema 的 JSON。
+**0 新第三方依赖**（纯 stdlib）。
+
+**新增**：
+
+- **schema→GBNF 转换器**（`gbnf.go`）：`SchemaToGBNF(schema)` 递归转换，支持
+  object（properties/required/可选属性）、array（items/minItems）、
+  string/number/integer/boolean/null、enum（字面量交替）；附完整 JSON 原语规则
+  （value/string/char/number/ws 等），输出自洽可解析、稳定可测（属性排序）
+- **降级策略**：不支持的结构（$ref/oneOf/pattern/数值范围等）降级为「任意 JSON 值」规则，
+  坏 schema 不报错、不 panic、不阻断生成
+- **递归深度上限**（32）防恶意/超深 schema
+- **Grammar 策略接入**（`grammar.go`）：`Prepare` 为每个工具生成 GBNF 并缓存，
+  注入更严格的 system 引导；新增 `Grammars()` 暴露 tool ID → GBNF 供 provider 约束
+
+**测试**：gbnf 19 测试 + grammar 新增 2 测试。
+
+**总计**：283 测试。
+
 ## [1.2.0] - 2026-06
 
 ### MCP stdio Client（让模型调外部工具）
@@ -98,9 +123,10 @@ v1.0 完整版上加 2 个能力，让 server 模式可上生产。
 
 ## 计划 (v1.x)
 
-- v1.3：Grammar GBNF 完整版（schema→GBNF 转换器）
+- v1.4：provider 层接入 GBNF（Ollama format / llama.cpp grammar 字段）做真约束
 - v2：分布式部署
 
+[1.3.0]: https://github.com/yiwanghehe/acorncode/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/yiwanghehe/acorncode/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/yiwanghehe/acorncode/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/yiwanghehe/acorncode/releases/tag/v1.0.0
