@@ -337,6 +337,9 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, data any) {
 type ChatRequest struct {
 	Message   string `json:"message"`
 	SessionID string `json:"session_id,omitempty"`
+	// ForceTool 为 true 时，本次请求强制工具调用（仅 grammar 策略生效，v1.7）。
+	// 请求级开关：不影响其他并发请求（每请求用独立 Grammar 实例）。
+	ForceTool bool `json:"force_tool,omitempty"`
 }
 
 // handleChat 处理 /v1/chat，返回 SSE 流
@@ -432,7 +435,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		MaxSameError: 3,
 		MaxTools:     10,
 	}
-	loop := agent.NewLoop(sessID, loopCfg, s.cfg.Store, eventBus, s.cfg.Provider, s.cfg.Strategy, s.cfg.Tools, s.cfg.Broker, s.cfg.Loader)
+	loop := agent.NewLoop(sessID, loopCfg, s.cfg.Store, eventBus, s.cfg.Provider, s.strategyForRequest(req.ForceTool), s.cfg.Tools, s.cfg.Broker, s.cfg.Loader)
 	loop.SetCompactor(&compaction.SimpleCompactor{
 		Provider:   s.cfg.Provider,
 		Model:      s.cfg.Model,
@@ -461,6 +464,26 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeSSE(w, flusher, "finish", map[string]any{"reason": "stop"})
+}
+
+// strategyForRequest 返回本次请求应使用的 toolcall 策略（v1.7）。
+//
+// 默认返回共享的 s.cfg.Strategy。当请求要求 force_tool 且基础策略是 grammar 时，
+// 返回一个**独立的** Grammar 实例（ForceToolCall=true），避免修改共享策略的状态、
+// 不影响其他并发请求。非 grammar 策略时 force_tool 无效，按原策略返回。
+func (s *Server) strategyForRequest(forceTool bool) toolcall.Strategy {
+	if !forceTool {
+		return s.cfg.Strategy
+	}
+	if _, ok := s.cfg.Strategy.(*toolcall.Grammar); !ok {
+		// 非 grammar 策略：force_tool 无意义，记日志并退回共享策略
+		slog.Warn("server: force_tool 仅 grammar 策略生效，已忽略",
+			"strategy", s.cfg.Strategy.Name())
+		return s.cfg.Strategy
+	}
+	g := toolcall.NewGrammar()
+	g.ForceToolCall = true
+	return g
 }
 
 // subscribeAndForward 订阅 bus 4 topic → 转发到 SSE

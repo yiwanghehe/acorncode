@@ -1,10 +1,10 @@
 # AcornCode
 
-> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.6**
+> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.7**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/)
-[![Tests 293](https://img.shields.io/badge/tests-293%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
+[![Tests 298](https://img.shields.io/badge/tests-298%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
 
 AcornCode 是一个**纯 Go 原生**的 coding agent，类似 [opencode](https://github.com/sst/opencode) 但做了关键简化：
 
@@ -96,11 +96,11 @@ make e2e               # 端到端（需本地 ollama）
 | Bus（6 事件，5 消费） | `internal/bus/event.go` | - |
 | AGENTS.md Loader | `internal/instruction/loader.go` | - |
 | **Bubble Tea TUI**（5 topic 订阅） | `internal/tui/model.go` | 28 |
-| **HTTP/SSE Server + Bearer 鉴权 + 多 session**（v1.1） | `internal/server/server.go` | 17 |
+| **HTTP/SSE Server + Bearer 鉴权 + 多 session + 请求级 `force_tool`**（v1.1 / v1.7） | `internal/server/server.go` | 22 |
 | **MCP stdio Client**（v1.2，让模型调外部工具） | `internal/mcp/client.go` | 15 |
 | CLI（TTY 检测 + 7 flag，`--force-tool` v1.6） | `cmd/acorn/main.go` | 13 |
 
-**总计**：**293 测试**，< 5 秒。**4 第三方依赖**（MCP / GBNF 均 0 新依赖，纯 stdlib）。
+**总计**：**298 测试**，< 5 秒。**4 第三方依赖**（MCP / GBNF 均 0 新依赖，纯 stdlib）。
 
 ## 当前状态
 
@@ -144,6 +144,13 @@ curl -X POST http://localhost:8080/v1/sessions/sess_xxx/chat \
   -H 'Content-Type: application/json' \
   -d '{"message": "继续"}'
 # → SSE 流（同 /v1/chat，向后兼容）
+
+# 5. 请求级强制工具调用（v1.7，需 server 以 --toolcall=grammar 启动）
+curl -X POST http://localhost:8080/v1/chat \
+  -H 'Authorization: Bearer secret' \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "读 README", "force_tool": true}'
+# force_tool=true 时本次请求强制工具调用；不影响其他并发请求
 ```
 
 **不鉴权模式**：省略 `--api-key` / `ACORN_API_KEY`，server 开放（dev 用）。

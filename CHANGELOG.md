@@ -2,6 +2,24 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.7.0] - 2026-06
+
+### HTTP server 请求级 force_tool
+
+把强制工具调用能力带到 HTTP API：每个请求可独立决定是否强制。
+
+**新增**：
+
+- **`force_tool` 请求字段**：`POST /v1/chat` 与 `/v1/sessions/{id}/chat` 的 body 支持
+  `{"force_tool": true}`，本次请求强制工具调用（仅 server 以 grammar 策略启动时生效）
+- **请求级隔离**：`strategyForRequest` 在 force 时返回**独立的** Grammar 实例
+  （ForceToolCall=true），不修改共享 `cfg.Strategy`，并发请求互不干扰
+- 非 grammar 策略带 force_tool 时记日志忽略，退回共享策略
+
+**测试**：server +5（无 force / grammar force / 非 grammar 忽略 / prompted 忽略 / 并发隔离）。
+
+**总计**：298 测试。
+
 ## [1.6.0] - 2026-06
 
 ### --force-tool CLI flag（暴露强制工具调用）
