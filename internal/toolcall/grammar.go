@@ -80,10 +80,13 @@ func (g *Grammar) Prepare(req *llm.ChatRequest, tools []tool.Definition) error {
 	req.System = append(req.System, sb.String())
 
 	// v1.4：可选强制工具调用——设置 req.Format 让 Ollama 约束输出为合法工具调用 JSON。
+	// v1.5：同时设置 req.ToolChoice="any"，让 Anthropic 走 tool_choice 强制调工具，
+	//        两个 provider 行为对齐。
 	if g.ForceToolCall {
 		if format := g.buildToolCallFormat(); format != nil {
 			req.Format = format
 		}
+		req.ToolChoice = "any"
 	}
 	return nil
 }

@@ -2,6 +2,27 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.5.0] - 2026-06
+
+### Anthropic 结构化输出（tool_choice 强制）
+
+让 Anthropic 的强制工具调用对齐 v1.4 的 Ollama `format` 约束，两个 provider 行为统一。
+
+**新增**：
+
+- **`ChatRequest.ToolChoice`**（provider 无关）：工具调用强制策略
+  - `""`/`"auto"` → 默认（模型自行决定）
+  - `"any"` → 强制调用某个工具
+  - `"<name>"` → 强制调用指定工具
+- **Anthropic 映射 `tool_choice`**：`buildAnthropicToolChoice` 把 ToolChoice 转成
+  Anthropic 的 `{"type":"any"}` / `{"type":"tool","name":...}`；默认不发（等价 auto）
+- **Grammar.ForceToolCall 对齐两端**：开启后同时设 `req.Format`（Ollama 约束）
+  和 `req.ToolChoice="any"`（Anthropic 强制），让两个 provider 都强制工具调用
+
+**测试**：anthropic +4（tool_choice any/named/default + 映射单测）。
+
+**总计**：291 测试。
+
 ## [1.4.0] - 2026-06
 
 ### Provider 约束生成 + 修复 strategy.Prepare 接线
@@ -149,9 +170,10 @@ v1.0 完整版上加 2 个能力，让 server 模式可上生产。
 
 ## 计划 (v1.x)
 
-- v1.5：Anthropic 结构化输出（tool_choice 强制）对齐 Ollama format
+- v1.6：Loop 暴露 ForceToolCall 开关（CLI flag / 配置），让用户按需开启强制工具调用
 - v2：分布式部署
 
+[1.5.0]: https://github.com/yiwanghehe/acorncode/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/yiwanghehe/acorncode/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/yiwanghehe/acorncode/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/yiwanghehe/acorncode/compare/v1.1.0...v1.2.0

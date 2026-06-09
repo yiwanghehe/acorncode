@@ -165,9 +165,29 @@ func (a *Anthropic) buildRequestBody(req ChatRequest) ([]byte, error) {
 	}
 	if len(req.Tools) > 0 {
 		body["tools"] = a.convertTools(req.Tools)
+		// v1.5：工具调用强制策略 → Anthropic tool_choice
+		if tc := buildAnthropicToolChoice(req.ToolChoice); tc != nil {
+			body["tool_choice"] = tc
+		}
 	}
 
 	return json.Marshal(body)
+}
+
+// buildAnthropicToolChoice 把 provider 无关的 ToolChoice 映射为 Anthropic tool_choice 对象。
+//
+//	""/"auto" → nil（不发，等价 auto 默认）
+//	"any"     → {"type":"any"}（强制调任意工具）
+//	"<name>"  → {"type":"tool","name":"<name>"}（强制调指定工具）
+func buildAnthropicToolChoice(choice string) map[string]any {
+	switch choice {
+	case "", "auto":
+		return nil
+	case "any":
+		return map[string]any{"type": "any"}
+	default:
+		return map[string]any{"type": "tool", "name": choice}
+	}
 }
 
 // convertTools 把 OpenAI function 风格 → Anthropic tools 风格

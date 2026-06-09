@@ -40,6 +40,15 @@ type ChatRequest struct {
 	// v1.4：Grammar 策略可设置它，让支持的 provider（Ollama 的 `format` 字段）
 	// 在解码阶段强制输出符合该 schema 的 JSON。为空时不约束。
 	Format json.RawMessage
+
+	// ToolChoice 是 provider 无关的工具调用强制策略（v1.5）。
+	// 取值：
+	//   ""     - 默认（auto，模型自行决定是否调工具）
+	//   "auto" - 同上，显式
+	//   "any"  - 强制调用某个工具（任意一个）
+	//   其他    - 强制调用该名字的工具
+	// Anthropic 映射到 tool_choice；Ollama 无原生等价（靠 Format 约束）。
+	ToolChoice string
 }
 
 // Definition 描述一个工具

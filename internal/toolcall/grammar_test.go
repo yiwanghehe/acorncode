@@ -297,6 +297,10 @@ func TestGrammar_ForceToolCall_SetsFormat(t *testing.T) {
 	if len(schema.Properties.Name.Enum) != 2 {
 		t.Errorf("name.enum 应含 2 个工具, got %v", schema.Properties.Name.Enum)
 	}
+	// v1.5：ForceToolCall 同时设置 ToolChoice=any
+	if req.ToolChoice != "any" {
+		t.Errorf("ForceToolCall 应设 ToolChoice=any, got %q", req.ToolChoice)
+	}
 }
 
 // TestGrammar_NoForce_NoFormat 验证默认不强制：不设置 req.Format（向后兼容）。
@@ -306,5 +310,8 @@ func TestGrammar_NoForce_NoFormat(t *testing.T) {
 	_ = g.Prepare(req, grammarTestTools())
 	if len(req.Format) != 0 {
 		t.Errorf("默认 ForceToolCall=false 不应设置 Format, got %s", req.Format)
+	}
+	if req.ToolChoice != "" {
+		t.Errorf("默认不应设置 ToolChoice, got %q", req.ToolChoice)
 	}
 }

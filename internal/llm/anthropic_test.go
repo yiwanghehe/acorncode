@@ -344,6 +344,87 @@ func TestAnthropic_ToolSchemaConversion(t *testing.T) {
 	}
 }
 
+// captureAnthropicBody 起一个 httptest server 捕获请求 body，返回解析后的 map。
+func captureAnthropicBody(t *testing.T, req ChatRequest) map[string]any {
+	t.Helper()
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	a := NewAnthropic(AnthropicConfig{Endpoint: srv.URL, APIKey: "test", Model: "claude-test"})
+	ch, _ := a.Stream(context.Background(), req)
+	for range ch {
+	}
+	return gotBody
+}
+
+// TestAnthropic_ToolChoice_Any 验证 v1.5：ToolChoice="any" → tool_choice {type:any}。
+func TestAnthropic_ToolChoice_Any(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object"}`)
+	body := captureAnthropicBody(t, ChatRequest{
+		Model:      Model{ID: "claude-test"},
+		Tools:      []Definition{{ID: "read", JSONSchema: schema}},
+		ToolChoice: "any",
+	})
+	tc, ok := body["tool_choice"].(map[string]any)
+	if !ok {
+		t.Fatalf("应有 tool_choice 对象: %v", body["tool_choice"])
+	}
+	if tc["type"] != "any" {
+		t.Errorf("tool_choice.type = %v, 期望 any", tc["type"])
+	}
+}
+
+// TestAnthropic_ToolChoice_Named 验证 ToolChoice="<name>" → tool_choice {type:tool,name}。
+func TestAnthropic_ToolChoice_Named(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object"}`)
+	body := captureAnthropicBody(t, ChatRequest{
+		Model:      Model{ID: "claude-test"},
+		Tools:      []Definition{{ID: "read", JSONSchema: schema}},
+		ToolChoice: "read",
+	})
+	tc, ok := body["tool_choice"].(map[string]any)
+	if !ok {
+		t.Fatalf("应有 tool_choice 对象: %v", body["tool_choice"])
+	}
+	if tc["type"] != "tool" || tc["name"] != "read" {
+		t.Errorf("tool_choice = %v, 期望 {tool, read}", tc)
+	}
+}
+
+// TestAnthropic_ToolChoice_Default 验证默认（空）不发 tool_choice。
+func TestAnthropic_ToolChoice_Default(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object"}`)
+	body := captureAnthropicBody(t, ChatRequest{
+		Model: Model{ID: "claude-test"},
+		Tools: []Definition{{ID: "read", JSONSchema: schema}},
+	})
+	if _, ok := body["tool_choice"]; ok {
+		t.Errorf("默认不应发 tool_choice: %v", body["tool_choice"])
+	}
+}
+
+// TestBuildAnthropicToolChoice 单测映射逻辑。
+func TestBuildAnthropicToolChoice(t *testing.T) {
+	if buildAnthropicToolChoice("") != nil {
+		t.Error("空应返 nil")
+	}
+	if buildAnthropicToolChoice("auto") != nil {
+		t.Error("auto 应返 nil")
+	}
+	if m := buildAnthropicToolChoice("any"); m["type"] != "any" {
+		t.Errorf("any 映射错误: %v", m)
+	}
+	if m := buildAnthropicToolChoice("edit"); m["type"] != "tool" || m["name"] != "edit" {
+		t.Errorf("named 映射错误: %v", m)
+	}
+}
+
 func TestAnthropic_ListModels(t *testing.T) {
 	a := NewAnthropic(AnthropicConfig{APIKey: "test"})
 	models, err := a.ListModels(context.Background())
