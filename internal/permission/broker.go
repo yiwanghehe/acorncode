@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"sync"
 	"time"
+
+	"acorncode/internal/id"
 )
 
 // DefaultAskTimeout 是 ask 弹窗等用户回复的超时
@@ -227,17 +229,7 @@ func (b *Broker) askUser(ctx context.Context, req Request) error {
 	}
 }
 
-// randomShort 生成 8 字符短 ID
+// randomShort 生成 8 字符短 ID（统一走 internal/id 包，R2 去重）。
 func randomShort() string {
-	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-	now := time.Now().UnixNano()
-	b := make([]byte, 8)
-	for i := range b {
-		b[i] = chars[now%int64(len(chars))]
-		now /= int64(len(chars))
-		if now == 0 {
-			now = time.Now().UnixNano()
-		}
-	}
-	return string(b)
+	return id.Short()
 }

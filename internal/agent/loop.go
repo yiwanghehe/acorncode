@@ -13,6 +13,7 @@ import (
 
 	"acorncode/internal/bus"
 	"acorncode/internal/compaction"
+	"acorncode/internal/id"
 	"acorncode/internal/instruction"
 	"acorncode/internal/llm"
 	"acorncode/internal/permission"
@@ -646,20 +647,9 @@ func marshalArgs(args map[string]any) json.RawMessage {
 	return b
 }
 
-// newID 生成唯一 ID。
-// TODO: 替换为 KSUID/ULID（见 §6.1）
+// newID 生成带前缀的唯一 ID（统一走 internal/id 包，R2 去重）。
 func newID(prefix string) string {
-	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-	now := time.Now().UnixNano()
-	b := make([]byte, 16)
-	for i := range b {
-		b[i] = chars[now%int64(len(chars))]
-		now /= int64(len(chars))
-		if now == 0 {
-			now = time.Now().UnixNano()
-		}
-	}
-	return prefix + "_" + string(b)
+	return id.New(prefix)
 }
 
 // toolDefsToLLM 把 tool.Definition 转为 llm.Definition

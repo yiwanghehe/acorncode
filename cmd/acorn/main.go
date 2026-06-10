@@ -20,6 +20,7 @@ import (
 	"acorncode/internal/agent"
 	"acorncode/internal/bus"
 	"acorncode/internal/compaction"
+	"acorncode/internal/id"
 	"acorncode/internal/instruction"
 	"acorncode/internal/llm"
 	"acorncode/internal/mcp"
@@ -318,17 +319,7 @@ func (a *permissionBusAdapter) Publish(ev permission.Event) {
 	})
 }
 
-// newShortID 生成 8 字符短 ID
+// newShortID 生成 8 字符短 ID（统一走 internal/id 包，R2 去重）。
 func newShortID() string {
-	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-	now := time.Now().UnixNano()
-	b := make([]byte, 8)
-	for i := range b {
-		b[i] = chars[now%int64(len(chars))]
-		now /= int64(len(chars))
-		if now == 0 {
-			now = time.Now().UnixNano()
-		}
-	}
-	return string(b)
+	return id.Short()
 }

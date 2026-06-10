@@ -32,6 +32,7 @@ import (
 	"acorncode/internal/agent"
 	"acorncode/internal/bus"
 	"acorncode/internal/compaction"
+	"acorncode/internal/id"
 	"acorncode/internal/instruction"
 	"acorncode/internal/llm"
 	"acorncode/internal/permission"
@@ -562,20 +563,7 @@ func (s *Server) writeSSEError(w http.ResponseWriter, flusher http.Flusher, msg 
 	s.writeSSE(w, flusher, "error", map[string]any{"message": msg})
 }
 
-// randomShortID 生成 8 字符短 ID（带 counter 防同纳秒冲突）
-var idCounter uint64
-
+// randomID 生成 8 字符短 ID（统一走 internal/id 包，R2 去重）。
 func randomID() string {
-	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-	idCounter++
-	now := time.Now().UnixNano() + int64(idCounter)
-	b := make([]byte, 8)
-	for i := range b {
-		b[i] = chars[now%int64(len(chars))]
-		now /= int64(len(chars))
-		if now == 0 {
-			now = time.Now().UnixNano() + int64(idCounter)
-		}
-	}
-	return string(b)
+	return id.Short()
 }
