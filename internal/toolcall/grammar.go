@@ -356,18 +356,9 @@ func typeMatches(v any, typ string) bool {
 
 // RetryHint 校验失败时给模型提示
 func (g *Grammar) RetryHint(failed FailedCall, _ []tool.Definition) (llm.Message, llm.Message) {
-	asst := llm.Message{Role: "assistant", Content: failed.RawText}
-	var hint string
-	switch failed.Reason {
-	case "json_parse_error":
-		hint = fmt.Sprintf("Your last <tool_call> block was malformed JSON: %s. Re-output a single valid <tool_call>{\"name\":\"<id>\",\"arguments\":{...}}</tool_call> block.", failed.Detail)
-	case "schema_violation":
-		hint = fmt.Sprintf("Your last tool call failed schema validation: %s. Check required fields and types.", failed.Detail)
-	case "unknown_tool":
-		hint = fmt.Sprintf("You called a tool that doesn't exist: %s. Available: read, edit, bash, ...", failed.Detail)
-	default:
-		hint = "Your last tool call failed: " + failed.Detail
-	}
-	user := llm.Message{Role: "user", Content: hint}
-	return asst, user
+	return buildRetryHint(failed, retryHints{
+		JSONParse: "Your last <tool_call> block was malformed JSON: %s. Re-output a single valid <tool_call>{\"name\":\"<id>\",\"arguments\":{...}}</tool_call> block.",
+		Schema:    "Your last tool call failed schema validation: %s. Check required fields and types.",
+		Unknown:   "You called a tool that doesn't exist: %s. Available: read, edit, bash, ...",
+	})
 }
