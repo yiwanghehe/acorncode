@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -213,6 +212,17 @@ type SessionInfo struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
+// sessionToInfo 把 session.Session 转为 API 返回的 SessionInfo（R4：消除 3 处重复映射）。
+func sessionToInfo(sess *session.Session) SessionInfo {
+	return SessionInfo{
+		ID:        sess.ID,
+		Title:     sess.Title,
+		Directory: sess.Directory,
+		CreatedAt: sess.CreatedAt.Unix(),
+		UpdatedAt: sess.UpdatedAt.Unix(),
+	}
+}
+
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	var req CreateSessionRequest
 	if r.ContentLength > 0 {
@@ -238,13 +248,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.writeJSON(w, http.StatusCreated, SessionInfo{
-		ID:        sess.ID,
-		Title:     sess.Title,
-		Directory: sess.Directory,
-		CreatedAt: sess.CreatedAt.Unix(),
-		UpdatedAt: sess.UpdatedAt.Unix(),
-	})
+	s.writeJSON(w, http.StatusCreated, sessionToInfo(sess))
 }
 
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
@@ -268,13 +272,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]SessionInfo, 0, len(sessions))
 	for _, sess := range sessions {
-		out = append(out, SessionInfo{
-			ID:        sess.ID,
-			Title:     sess.Title,
-			Directory: sess.Directory,
-			CreatedAt: sess.CreatedAt.Unix(),
-			UpdatedAt: sess.UpdatedAt.Unix(),
-		})
+		out = append(out, sessionToInfo(sess))
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"sessions": out,
@@ -288,43 +286,22 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request, sessID strin
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}
-	s.writeJSON(w, http.StatusOK, SessionInfo{
-		ID:        sess.ID,
-		Title:     sess.Title,
-		Directory: sess.Directory,
-		CreatedAt: sess.CreatedAt.Unix(),
-		UpdatedAt: sess.UpdatedAt.Unix(),
-	})
+	s.writeJSON(w, http.StatusOK, sessionToInfo(sess))
 }
 
-// handleChatByID 处理 /v1/sessions/{id}/chat
-//
-// 复用 handleChat 的逻辑（session_id 来自 path）
+// handleChatByID 处理 /v1/sessions/{id}/chat：解析 body 后强制 session_id = sessID，
+// 直接调用 serveChatStream（R6：不再 marshal 回 r.Body 的 hack）。
 func (s *Server) handleChatByID(w http.ResponseWriter, r *http.Request, sessID string) {
-	// 复用 handleChat 但强制 session_id = sessID
-	// 简单做法：解析 body，把 session_id 强制覆盖
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	var req ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	req, ok := s.decodeChatRequest(w, r)
+	if !ok {
 		return
 	}
-	if strings.TrimSpace(req.Message) == "" {
-		http.Error(w, "message 不能为空", http.StatusBadRequest)
-		return
-	}
-	// 强制 session_id
-	req.SessionID = sessID
-	// 替换 body 里的 session_id（虽然 handler 不会读它，但保险）
-	body, _ := json.Marshal(req)
-	r.Body = io.NopCloser(strings.NewReader(string(body)))
-	r.ContentLength = int64(len(body))
-
-	s.handleChat(w, r)
+	req.SessionID = sessID // path 优先
+	s.serveChatStream(w, r, req)
 }
 
 // writeJSON 写 JSON 响应
@@ -343,36 +320,57 @@ type ChatRequest struct {
 	ForceTool bool `json:"force_tool,omitempty"`
 }
 
-// handleChat 处理 /v1/chat，返回 SSE 流
+// decodeChatRequest 解析并校验 ChatRequest。失败时已写好错误响应并返回 ok=false。
+func (s *Server) decodeChatRequest(w http.ResponseWriter, r *http.Request) (ChatRequest, bool) {
+	var req ChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+		return req, false
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		http.Error(w, "message 不能为空", http.StatusBadRequest)
+		return req, false
+	}
+	return req, true
+}
+
+// handleChat 处理 /v1/chat：薄入口，解析校验后交给 serveChatStream（R1）。
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	// 解析请求
-	var req ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	req, ok := s.decodeChatRequest(w, r)
+	if !ok {
 		return
 	}
-	if strings.TrimSpace(req.Message) == "" {
-		http.Error(w, "message 不能为空", http.StatusBadRequest)
-		return
-	}
+	s.serveChatStream(w, r, req)
+}
 
-	// SSE headers
+// setupSSE 写 SSE 响应头并返回 flusher（R1 拆分）。
+func (s *Server) setupSSE(w http.ResponseWriter) http.Flusher {
 	w.Header().Set("content-type", "text/event-stream")
 	w.Header().Set("cache-control", "no-cache")
 	w.Header().Set("connection", "keep-alive")
 	w.Header().Set("x-accel-buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
+	return flusher
+}
 
-	// 创建或恢复 session
-	sessID := req.SessionID
-	if sessID == "" {
-		sessID = "sess_http_" + fmt.Sprintf("%d", time.Now().UnixNano())
+// resolveSessionID 返回请求的 session_id，为空则生成一个 http 会话 ID。
+func resolveSessionID(reqID string) string {
+	if reqID != "" {
+		return reqID
+	}
+	return "sess_http_" + id.Short()
+}
+
+// ensureSession 确保 session 存在：不存在则创建（已存在的 UNIQUE 冲突忽略）。
+// 返回写 SSE 错误的标志。
+func (s *Server) ensureSession(ctx context.Context, sessID string, w http.ResponseWriter, flusher http.Flusher) bool {
+	if _, getErr := s.cfg.Store.GetSession(ctx, sessID); getErr == nil {
+		return true // 已存在
 	}
 	sess := &session.Session{
 		ID:        sessID,
@@ -381,35 +379,20 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
-	// v1.1.2：by-ID 路径已验证 session 存在；这里也再查一次（兼容 /v1/chat 直调）
-	// 不存在才 create，避免 UNIQUE constraint
-	if _, getErr := s.cfg.Store.GetSession(r.Context(), sessID); getErr != nil {
-		if createErr := s.cfg.Store.CreateSession(r.Context(), sess); createErr != nil {
-			if !strings.Contains(createErr.Error(), "已存在") &&
-				!strings.Contains(createErr.Error(), "UNIQUE constraint") {
-				s.writeSSEError(w, flusher, "create session: "+createErr.Error())
-				return
-			}
+	if createErr := s.cfg.Store.CreateSession(ctx, sess); createErr != nil {
+		if !strings.Contains(createErr.Error(), "已存在") &&
+			!strings.Contains(createErr.Error(), "UNIQUE constraint") {
+			s.writeSSEError(w, flusher, "create session: "+createErr.Error())
+			return false
 		}
 	}
+	return true
+}
 
-	// 起 bus
-	eventBus := bus.New()
-	defer eventBus.Close()
-
-	// 订阅 4 个 topic 转发到 SSE
-	teardown := s.subscribeAndForward(r.Context(), eventBus, sessID, w, flusher)
-	defer teardown()
-
-	// 写第一个 event：session started
-	s.writeSSE(w, flusher, "session", map[string]any{
-		"session_id": sessID,
-	})
-
-	// 写 user message
-	userMsg := &session.UserMessage{Text: req.Message}
-	msgID := "msg_user_" + randomID()
-	_ = s.cfg.Store.AppendMessage(r.Context(), &session.Message{
+// appendUserMessage 把用户消息落库（带一个 TextPart）。
+func (s *Server) appendUserMessage(ctx context.Context, sessID, text string) {
+	msgID := "msg_user_" + id.Short()
+	_ = s.cfg.Store.AppendMessage(ctx, &session.Message{
 		ID:        msgID,
 		SessionID: sessID,
 		Role:      "user",
@@ -417,15 +400,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: time.Now(),
 		Parts: []session.Part{
 			&session.TextPart{
-				ID:        "prt_user_" + randomID(),
+				ID:        "prt_user_" + id.Short(),
 				MessageID: msgID,
 				SessionID: sessID,
-				Text:      req.Message,
+				Text:      text,
 			},
 		},
 	})
+}
 
-	// 创建 loop
+// newChatLoop 创建本次请求的 agent.Loop（注入 compactor + 请求级策略）。
+func (s *Server) newChatLoop(sessID string, eventBus *bus.Bus, forceTool bool) *agent.Loop {
 	loopCfg := agent.LoopConfig{
 		AgentName:    "build",
 		Model:        s.cfg.Model,
@@ -436,22 +421,23 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		MaxSameError: 3,
 		MaxTools:     10,
 	}
-	loop := agent.NewLoop(sessID, loopCfg, s.cfg.Store, eventBus, s.cfg.Provider, s.strategyForRequest(req.ForceTool), s.cfg.Tools, s.cfg.Broker, s.cfg.Loader)
+	loop := agent.NewLoop(sessID, loopCfg, s.cfg.Store, eventBus, s.cfg.Provider, s.strategyForRequest(forceTool), s.cfg.Tools, s.cfg.Broker, s.cfg.Loader)
 	loop.SetCompactor(&compaction.SimpleCompactor{
 		Provider:   s.cfg.Provider,
 		Model:      s.cfg.Model,
 		KeepRecent: 6,
 		MaxSummary: 500,
 	})
+	return loop
+}
 
-	// 跑 loop（同步等结束）
-	// 用独立 context（不依赖 r.Context），client 断开不影响 loop
-	// 客户端通过 SSE 看到 finish event 即可
+// runChatLoop 用独立 context 跑 loop（client 断开 100ms 后才取消，让 loop 写完 finish），
+// 并写最终 finish/error SSE 事件。
+func (s *Server) runChatLoop(r *http.Request, loop *agent.Loop, userMsg *session.UserMessage, w http.ResponseWriter, flusher http.Flusher) {
 	loopCtx, loopCancel := context.WithCancel(context.Background())
 	defer loopCancel()
 	go func() {
 		<-r.Context().Done()
-		// client 断开 100ms 后取消 loop（让 loop 写完 finish event）
 		time.Sleep(100 * time.Millisecond)
 		loopCancel()
 	}()
@@ -463,8 +449,29 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.writeSSEError(w, flusher, err.Error())
 		return
 	}
-
 	s.writeSSE(w, flusher, "finish", map[string]any{"reason": "stop"})
+}
+
+// serveChatStream 是聊天 SSE 流的编排核心（R1：从原 handleChat 上帝函数拆出）。
+// 两个入口（/v1/chat 与 /v1/sessions/{id}/chat）都解析好 req 后调用它。
+func (s *Server) serveChatStream(w http.ResponseWriter, r *http.Request, req ChatRequest) {
+	flusher := s.setupSSE(w)
+	sessID := resolveSessionID(req.SessionID)
+
+	if !s.ensureSession(r.Context(), sessID, w, flusher) {
+		return
+	}
+
+	eventBus := bus.New()
+	defer eventBus.Close()
+	teardown := s.subscribeAndForward(r.Context(), eventBus, sessID, w, flusher)
+	defer teardown()
+
+	s.writeSSE(w, flusher, "session", map[string]any{"session_id": sessID})
+	s.appendUserMessage(r.Context(), sessID, req.Message)
+
+	loop := s.newChatLoop(sessID, eventBus, req.ForceTool)
+	s.runChatLoop(r, loop, &session.UserMessage{Text: req.Message}, w, flusher)
 }
 
 // strategyForRequest 返回本次请求应使用的 toolcall 策略（v1.7）。
