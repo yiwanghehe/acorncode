@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"acorncode/internal/bus"
@@ -71,20 +70,6 @@ type SessionStore interface {
 	SetFinishReason(ctx context.Context, messageID string, reason string) error
 }
 
-// turnState 跟踪一个 turn 内的失败（见 §9.5.5）
-type turnState struct {
-	bashFails    int
-	toolAttempts map[string]int
-	sameErrCount map[string]int
-}
-
-func newTurnState() *turnState {
-	return &turnState{
-		toolAttempts: make(map[string]int),
-		sameErrCount: make(map[string]int),
-	}
-}
-
 // Loop 是单 session 的状态机实例。
 // 重要：每个 Loop 由单 goroutine 拥有，无并发访问。
 // state 字段不需要原子操作，因为所有转移都发生在 Run() 同一 goroutine 上。
@@ -102,7 +87,7 @@ type Loop struct {
 
 	state LoopState
 	turn  int
-	fail  *turnState
+	breaker *circuitBreaker
 }
 
 // NewLoop 构造 Loop（手工 DI 模式，见 §3.4）
@@ -118,7 +103,7 @@ func NewLoop(sessionID string, cfg LoopConfig, store SessionStore, b *bus.Bus, p
 		perm:      pb,
 		instr:     il,
 		state:     StateIdle,
-		fail:      newTurnState(),
+		breaker:   newCircuitBreaker(circuitConfig{}),
 	}
 }
 
@@ -159,7 +144,11 @@ func (l *Loop) Run(ctx context.Context, userMsg *session.UserMessage) error {
 	}
 
 	l.turn = 0
-	l.fail = newTurnState()
+	l.breaker = newCircuitBreaker(circuitConfig{
+		MaxToolRetry: l.cfg.MaxToolRetry,
+		MaxBashFails: l.cfg.MaxBashFails,
+		MaxSameError: l.cfg.MaxSameError,
+	})
 
 	for {
 		// ctx 取消：立即退出
@@ -386,7 +375,7 @@ func (l *Loop) executeToolCalls(ctx context.Context, calls []ToolCall) error {
 		result, _ := t.Execute(ctx, args, tc)
 
 		// 3. 熔断检查（见 §9.5.5）
-		if err := l.checkCutoff(ctx, call, result); err != nil {
+		if err := l.breaker.Check(call, result); err != nil {
 			return err
 		}
 
@@ -394,53 +383,6 @@ func (l *Loop) executeToolCalls(ctx context.Context, calls []ToolCall) error {
 		l.updateToolPart(ctx, call, result)
 	}
 	return nil
-}
-
-// checkCutoff 监控连续失败，超阈值返 errTurnAborted（见 §9.5.5）
-func (l *Loop) checkCutoff(ctx context.Context, call ToolCall, result tool.Result) error {
-	sig := errSignature(call, result)
-
-	// 规则 1：同 tool call 重试上限
-	l.fail.toolAttempts[call.CallID]++
-	maxRetry := l.cfg.MaxToolRetry
-	if maxRetry == 0 {
-		maxRetry = 3
-	}
-	if l.fail.toolAttempts[call.CallID] > maxRetry {
-		return fmt.Errorf("%w: 工具 %s 超过重试上限（换思路或问用户）", errTurnAborted, call.ToolID)
-	}
-
-	// 规则 2：Bash 连续失败上限
-	if call.ToolID == "bash" && result.Status == "error" {
-		l.fail.bashFails++
-		maxBash := l.cfg.MaxBashFails
-		if maxBash == 0 {
-			maxBash = 5
-		}
-		if l.fail.bashFails > maxBash {
-			return fmt.Errorf("%w: bash 在本 turn 失败 %d 次，可能陷入修复循环，STOP 并问用户", errTurnAborted, maxBash)
-		}
-	}
-
-	// 规则 3：同一错误签名连续上限
-	l.fail.sameErrCount[sig]++
-	maxSame := l.cfg.MaxSameError
-	if maxSame == 0 {
-		maxSame = 3
-	}
-	if l.fail.sameErrCount[sig] > maxSame {
-		return fmt.Errorf("%w: 同一错误 %q 出现 %d 次，STOP 换思路", errTurnAborted, sig, maxSame)
-	}
-	return nil
-}
-
-// errSignature 用 tool + status + 错误首行作为熔断签名
-func errSignature(call ToolCall, result tool.Result) string {
-	firstLine := strings.SplitN(result.Output, "\n", 2)[0]
-	if len(firstLine) > 80 {
-		firstLine = firstLine[:80]
-	}
-	return call.ToolID + "|" + result.Status + "|" + firstLine
 }
 
 // ============================================================
