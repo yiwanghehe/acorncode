@@ -1,6 +1,6 @@
 # AcornCode
 
-> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.7**
+> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.8**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/)
@@ -10,7 +10,7 @@ AcornCode 是一个**纯 Go 原生**的 coding agent，类似 [opencode](https:/
 
 | 维度 | opencode | **AcornCode** |
 |------|----------|---------------|
-| 运行时 | Node.js + Deno | **单二进制，4 依赖** |
+| 运行时 | Node.js + Deno | **单二进制，3 依赖** |
 | LLM | Anthropic/GPT | **本地小模型优先**（7B 跑得动） |
 | 工具调用 | 仅 Native | **Native + Prompted + Grammar** |
 | 持久化 | Drizzle + SQLite | SQLite（modernc，纯 Go） |
@@ -71,7 +71,7 @@ make ci                # fmt + vet + test
 make e2e               # 端到端（需本地 ollama）
 ```
 
-## 已实现（v1.1）
+## 已实现（v1.8）
 
 | 模块 | 文件 | 测试 |
 |------|------|------|
@@ -100,11 +100,11 @@ make e2e               # 端到端（需本地 ollama）
 | **MCP stdio Client**（v1.2，让模型调外部工具） | `internal/mcp/client.go` | 15 |
 | CLI（TTY 检测 + 7 flag，`--force-tool` v1.6） | `cmd/acorn/main.go` | 13 |
 
-**总计**：**298 测试**，< 5 秒。**4 第三方依赖**（MCP / GBNF 均 0 新依赖，纯 stdlib）。
+**总计**：**298 测试**，< 5 秒。**3 第三方依赖**（v1.8 移除 sqlx；MCP / GBNF 均 0 新依赖，纯 stdlib）。
 
 ## 当前状态
 
-**v1.1.0 完整版** — 6 个 tool + TUI + SQLite + 多 provider + 三 toolcall 策略 + HTTP API（鉴权 + 多 session）+ Permission 弹窗 + Compaction。
+**v1.8 完整版** — 6 个 tool + MCP 外部工具 + TUI + SQLite + 多 provider + 三 toolcall 策略（含 GBNF 约束 + 强制工具调用）+ HTTP API（鉴权 + 多 session + 请求级 `force_tool`）+ Permission 弹窗 + Compaction。**3 第三方依赖**（v1.8 移除 sqlx）。
 
 ### CLI 完整
 
@@ -214,7 +214,7 @@ AcornCode 可启动外部 **MCP（Model Context Protocol）server** 子进程，
 
 完整理由见 [docs/architecture.md](docs/architecture.md)。核心五点：
 
-1. **Go 原生 + 4 依赖**：单二进制 ~10MB；模型学 1 个 stdlib + 4 API
+1. **Go 原生 + 3 依赖**（v1.8 移除 sqlx）：单二进制 ~10MB；模型学 1 个 stdlib + 3 API
 2. **ToolCall 三策略**（v1.0 Native + Prompted + Grammar）：覆盖有/无原生 tool_call 的模型
 3. **Compaction 自动化**：长 session 自动摘要（v1.0.3）
 4. **HTTP API + 鉴权 + 多 session**（v1.1）：可上生产

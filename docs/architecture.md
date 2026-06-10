@@ -1,6 +1,7 @@
-# AcornCode 架构（v1.1 完整版）
+# AcornCode 架构（v1.7 完整版）
 
-> 当前真实实现的架构。v1.2+ 推迟的内容（GBNF 完整版、MCP、分布式）不在此文档。
+> 当前真实实现的架构。涵盖 v1.0 完整版 + v1.1 HTTP 可用 + v1.2 MCP + v1.3 GBNF +
+> v1.4~v1.7 工具调用约束端到端打通。v2+ 推迟内容（分布式）不在此文档。
 
 ## 1. 一句话
 
@@ -14,8 +15,8 @@
 ┌─────────────────────────────────────────────────────┐
 │  CLI (cmd/acorn/main.go)                            │  Bubble Tea TUI | HTTP/SSE
 │  - TTY 检测（TUI 模式才有）                          │
-│  - 5 flag: --provider / --toolcall / --server / --db / model
-│  - 启 SQLite + Provider + 工具 + Broker + TUI/Server │
+│  - 7 flag: --provider / --toolcall / --server / --api-key / --db / --force-tool / model
+│  - 启 SQLite + Provider + 工具 + MCP + Broker + TUI/Server │
 └────────────────────┬────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────┐
@@ -23,11 +24,11 @@
 │  ├─ loop.go:        状态机 + LLM 调度 + Compaction  │
 │  ├─ processor.go:   流式 chunk → part 状态          │
 │  └─ helpers.go:     token 估算 / 消息转换 / system  │
-└─┬──────┬──────┬──────┬──────┬──────┬─────────────────┘
-  │      │      │      │      │      │
-  ▼      ▼      ▼      ▼      ▼      ▼
- LLM   Tool   Perm   Sess   Bus   Instr
- (Ollama/Anthropic)  (6 tools)  (broker)  (SQLite)  (6 events)  (AGENTS.md)
+└─┬──────┬──────┬──────┬──────┬──────┬──────┬──────────┘
+  │      │      │      │      │      │      │
+  ▼      ▼      ▼      ▼      ▼      ▼      ▼
+ LLM   Tool   Perm   Sess   Bus   Instr  MCP
+ (Ollama/Anthropic)  (6 tools + MCP 外部)  (broker)  (SQLite)  (6 events)  (AGENTS.md)  (stdio client)
 ```
 
 ## 3. 核心契约
@@ -62,9 +63,13 @@ type Provider interface {
 
 `RawChunk` 类型：`"text"` / `"tool_call"` / `"finish"` / `"error"` / `"thinking"` / `"tool_call_delta"`。
 
+**ChatRequest 约束字段**（v1.4/v1.5）：
+- `Format`（JSON Schema，v1.4）：结构化输出约束。Ollama 转发到 `format` 字段，解码期强制 JSON
+- `ToolChoice`（provider 无关，v1.5）：`""`/`"auto"` 默认 | `"any"` 强制某工具 | `"<name>"` 强制指定工具。Anthropic 映射为 `tool_choice`
+
 **两个实现**（v1.0）：
-- **Ollama**（`internal/llm/ollama.go`）：NDJSON 流式 + `tools` 字段 + ctx 取消
-- **Anthropic**（`internal/llm/anthropic.go`，v1.0.2）：Anthropic Messages API + SSE + tool schema 转换（OpenAI function → Anthropic tools）
+- **Ollama**（`internal/llm/ollama.go`）：NDJSON 流式 + `tools` 字段 + `format` 约束 + ctx 取消
+- **Anthropic**（`internal/llm/anthropic.go`，v1.0.2）：Messages API + SSE + tool schema 转换 + `tool_choice` 强制（v1.5）
 
 ### 3.3 Toolcall Strategy
 
@@ -77,13 +82,22 @@ type Strategy interface {
 }
 ```
 
-**三个实现**（v1.1）：
+> **关键接线**（v1.4 修复）：`agent.Loop.buildRequest` 末尾必须调 `strategy.Prepare(req, tools)`，
+> 否则 Prompted/Grammar 注入的 system 说明与 GBNF 约束全部失效（曾长期未接线）。
+
+**三个实现**：
 
 | 策略 | 适用 | 文件 | 版本 |
 |------|------|------|------|
 | **Native** | Ollama/Anthropic/OpenAI 自带 | `native.go` | v0.1 |
 | **Prompted** | 小模型（无原生 tool_call） | `prompted.go` | v1.0.5 |
-| **Grammar** | 同 Prompted + 严格 JSON Schema 验证 | `grammar.go` | v1.0.6 |
+| **Grammar** | 同 Prompted + GBNF 约束 + JSON Schema 验证 | `grammar.go` + `gbnf.go` | v1.0.6 / v1.3 |
+
+**Grammar 约束链**（v1.3~v1.7）：
+- `gbnf.go`：`SchemaToGBNF` 把 JSON Schema 递归转成 GBNF 语法（object/array/string/number/enum），降级安全、深度上限 32
+- `Grammar.ForceToolCall`（默认 false）：开启后 `Prepare` 构造「工具调用 wrapper」schema 并同时设
+  `req.Format`（Ollama）+ `req.ToolChoice="any"`（Anthropic），两端统一强制工具调用
+- 暴露入口：CLI `--force-tool`（v1.6）/ HTTP 请求级 `force_tool`（v1.7，每请求独立 Grammar 实例）
 
 ### 3.4 Bus
 
@@ -182,6 +196,25 @@ type Store interface {
 
 所有 tool 第一步 normalize 路径：`tc.Cwd` base + `filepath.Clean`。
 
+## 5.5 MCP 外部工具（v1.2）
+
+`internal/mcp` 让 AcornCode 启动外部 MCP server 子进程，把它们的工具自动注册进 agent。
+
+```
+acorncode.json mcpServers → SetupFromConfigs → 每个 server 一个 stdio Client
+  Client: 启子进程 → initialize 握手 → tools/list → 包成 tool.Tool 注册进 Registry
+  调用:   tools/call（JSON-RPC 2.0 over stdio）
+```
+
+| 文件 | 职责 |
+|------|------|
+| `client.go` | stdio JSON-RPC 2.0 客户端：握手 / 请求-响应分发（pending map）/ ctx 取消 / 优雅关闭（2s 强杀） |
+| `adapter.go` | MCP 工具包成 `tool.Tool`，ID 加 server 名前缀（`fs_read_file`），统一走 Permission `ask` |
+| `config.go` | 从 `acorncode.json` 的 `mcpServers` 段读取（兼容主流 MCP 客户端），支持 `disabled` |
+| `manager.go` | `SetupFromConfigs` 批量启动；单 server 失败记日志跳过，不致命 |
+
+关键容错：坏 JSON 行跳过（`slog.Warn`）/ server 退出 EOF 时 `failAllPending` 唤醒所有等待者 / 单 server 失败不拖垮全部。测试用「re-exec 自身」作 mock stdio server，无外部依赖（15 测试）。
+
 ## 6. TUI（v0.4+，v1.0.1 多 topic）
 
 Bubble Tea + Lipgloss。订阅 5 个 Bus topic：
@@ -271,7 +304,7 @@ func (b *Broker) Ask(ctx, req) error {
 
 关键支撑：`AGENTS.md`（硬规则）/ 工具接口统一 / 错误回灌 / 测试当文档。
 
-## 11. v1.1 完整命令
+## 11. v1.7 完整命令
 
 ```
 acorn [model]
@@ -279,32 +312,38 @@ acorn [model]
   --toolcall=NAME        native | prompted | grammar（默认 native）
   --server=ADDR          启 HTTP server（如 ":8080"）
   --api-key=KEY          v1.1.1：HTTP Bearer 鉴权（也读 ACORN_API_KEY env）
+  --force-tool           v1.6：强制工具调用（仅 grammar；Ollama format + Anthropic tool_choice）
   --db=path              SQLite 路径（默认 .acorncode.db）
 ```
 
+HTTP 请求级 `force_tool`（v1.7）：`POST /v1/chat` body 加 `{"force_tool": true}`，每请求独立生效。
+
 ## 12. 关键设计决策
 
-### D1 — Go 原生 + 4 依赖（v1.0 平衡）
+### D1 — Go 原生 + 极少依赖（v1.0 平衡）
 
-- 0 依赖（v0.1-v0.3）→ 4 依赖（v1.0）：bubbletea + lipgloss + sqlite + sqlx
+- 0 依赖（v0.1-v0.3）→ 4 依赖（v1.0）→ **3 依赖**（v1.8 移除 sqlx，session 改用 `database/sql`）
 - 单二进制 ~10MB
-- 模型学 1 个 stdlib + 4 API 比学 10 个第三方库快
+- 模型学 1 个 stdlib + 3 API 比学 10 个第三方库快
 
-### D2 — ToolCall 三策略（v1.0 Native + Prompted，v1.0.6 Grammar）
+### D2 — ToolCall 三策略（v1.0 Native + Prompted，v1.0.6 Grammar，v1.3 GBNF）
 
 | 策略 | 适用 | 复杂度 | 版本 |
 |------|------|--------|------|
 | Native | Ollama/Anthropic/OpenAI | 低 | v0.1 |
 | Prompted | 小模型（无 tool_call） | 中 | v1.0.5 |
-| Grammar | 同 Prompted + JSON Schema 验证 | 中 | v1.0.6 |
+| Grammar | 同 Prompted + GBNF 约束 + JSON Schema 验证 | 中 | v1.0.6 / v1.3 |
 
-完整 GBNF（llama.cpp 集成）推迟到 v1.3（需 schema→GBNF 转换器，~500 行）。
+完整 GBNF（schema→GBNF 转换器 `gbnf.go`，~260 行）于 v1.3 落地，0 新依赖。
+v1.4~v1.7 把约束端到端打通：Prepare 接线修复 + Ollama `format` + Anthropic `tool_choice` +
+`--force-tool` CLI flag + HTTP 请求级 `force_tool`。
 
 ### D3 — 渐进式交付
 
 - v0.1 tracer bullet → v0.2 自举 → v0.3 配置化权限 → v0.4 TUI → v0.5 持久化
 - v1.0 完整版（5 增量：Permission 弹窗 / Anthropic / Compaction / HTTP API / Prompted）
 - v1.1 可上生产（HTTP 鉴权 + 多 session API）
+- v1.2 MCP → v1.3 GBNF → v1.4~v1.7 工具调用约束端到端打通
 - 每次 1-2 周，最小可用单元
 - 始终保持 main 可跑 + 100% 测试
 
@@ -318,8 +357,10 @@ acorn [model]
 acorncode (Go 1.25)
 ├── github.com/charmbracelet/bubbletea v1.3.10  // TUI 框架
 ├── github.com/charmbracelet/lipgloss v1.1.0   // TUI 样式
-├── github.com/jmoiron/sqlx v1.4.0              // SQL helper
 └── modernc.org/sqlite v1.52.0                 // 纯 Go SQLite（无 CGo）
 ```
 
-indirect deps：~20 个 small libs（term / ansi / cellbuf / golang.org/x/* 等）。
+> v1.8 移除 `jmoiron/sqlx`，session 存储改用标准库 `database/sql`（3 个核心第三方依赖）。
+> `golang.org/x/term`（TTY 检测）按项目口径视作 stdlib 扩展，不计入第三方。
+
+indirect deps：sqlite 编译工具链 + TUI term/ansi/cellbuf 等 small libs。

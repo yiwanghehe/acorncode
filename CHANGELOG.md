@@ -2,6 +2,30 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.8.0] - 2026-06
+
+### 移除 sqlx 依赖（做减法）+ 文档同步
+
+把核心第三方依赖从 4 个降到 3 个，并把漂移的文档全部对齐到当前实现。
+
+**减法**：
+
+- **移除 `github.com/jmoiron/sqlx`**：`SQLiteStore` 改用标准库 `database/sql`
+  - `sqlx.Open` → `sql.Open`；`db *sqlx.DB` → `db *sql.DB`
+  - `GetContext`+struct → `QueryRowContext().Scan(字段...)`（GetSession / GetPart）
+  - `QueryxContext`+`StructScan` → `QueryContext`+`Scan`（ListSessions / Messages）
+  - 行为零变化，session 包 19 测试全过；显式列名替代 `SELECT *`，更稳
+- 核心第三方依赖 **4 → 3**（bubbletea / lipgloss / modernc-sqlite），贴合「1 stdlib > 10 库」哲学
+
+**文档同步**（自举项目命脉）：
+
+- `AGENTS.md`：v1.6/293 → v1.7/298，补 v1.7 并发隔离坑（#18）、依赖边界
+- `docs/architecture.md`：整篇从 v1.1 → v1.7，补 MCP §5.5 / GBNF / force-tool / Format+ToolChoice 契约 / 依赖图
+- `README.md`：标题与「已实现/当前状态」→ v1.7，对比表与总计 → 3 依赖
+- `CHANGELOG.md`：清理已完成的 v1.7 计划段
+
+**测试**：298（无新增，纯减法 + 文档）。
+
 ## [1.7.0] - 2026-06
 
 ### HTTP server 请求级 force_tool
@@ -204,11 +228,12 @@ v1.0 完整版上加 2 个能力，让 server 模式可上生产。
 
 ### Tracer Bullet 首发
 
-## 计划 (v1.x)
+## 计划 (v2.x)
 
-- v1.7：HTTP server 也支持 force-tool（请求级开关）
-- v2：分布式部署
+- 分布式部署
 
+[1.8.0]: https://github.com/yiwanghehe/acorncode/compare/v1.7.0...v1.8.0
+[1.7.0]: https://github.com/yiwanghehe/acorncode/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/yiwanghehe/acorncode/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/yiwanghehe/acorncode/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/yiwanghehe/acorncode/compare/v1.3.0...v1.4.0

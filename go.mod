@@ -3,13 +3,12 @@ module acorncode
 go 1.25.0
 
 // v0.4 起引入 Bubble Tea（v0.4 之前 0 第三方依赖）。
-// v0.5 还会加 modernc.org/sqlite + sqlx 做持久化。
+// v0.5 加 modernc.org/sqlite 做持久化（v1.8 起用标准库 database/sql，移除 sqlx）。
 // 详见 docs/architecture.md §7 范围约束。
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/jmoiron/sqlx v1.4.0
 	golang.org/x/term v0.43.0
 	modernc.org/sqlite v1.52.0
 )

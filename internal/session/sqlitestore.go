@@ -1,6 +1,6 @@
 // Package session - SQLite 持久化（v0.5）
 //
-// 用 modernc.org/sqlite（纯 Go，无 CGo）+ jmoiron/sqlx。
+// 用 modernc.org/sqlite（纯 Go，无 CGo）+ 标准库 database/sql（v1.8 移除 sqlx 依赖）。
 // 接口与 MemoryStore 一致，agent.SessionStore 可互换。
 package session
 
@@ -13,13 +13,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite" // 注册 driver
 )
 
 // SQLiteStore 是 SQLite 实现
 type SQLiteStore struct {
-	db *sqlx.DB
+	db *sql.DB
 }
 
 // NewSQLiteStore 创建 / 打开 SQLite db
@@ -39,7 +38,7 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		}
 	}
 
-	db, err := sqlx.Open("sqlite", path)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -131,16 +130,14 @@ func (s *SQLiteStore) CreateSession(ctx context.Context, sess *Session) error {
 
 // GetSession 按 ID 取 session
 func (s *SQLiteStore) GetSession(ctx context.Context, id string) (*Session, error) {
-	var row struct {
-		ID        string `db:"id"`
-		ParentID  string `db:"parent_id"`
-		Title     string `db:"title"`
-		Directory string `db:"directory"`
-		Agent     string `db:"agent"`
-		CreatedAt int64  `db:"created_at"`
-		UpdatedAt int64  `db:"updated_at"`
-	}
-	err := s.db.GetContext(ctx, &row, `SELECT * FROM sessions WHERE id = ?`, id)
+	var (
+		rowID, parentID, title, directory, agent string
+		createdAt, updatedAt                     int64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, parent_id, title, directory, agent, created_at, updated_at
+		 FROM sessions WHERE id = ?`, id).
+		Scan(&rowID, &parentID, &title, &directory, &agent, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("session 不存在: %s", id)
 	}
@@ -148,19 +145,21 @@ func (s *SQLiteStore) GetSession(ctx context.Context, id string) (*Session, erro
 		return nil, err
 	}
 	return &Session{
-		ID:        row.ID,
-		ParentID:  row.ParentID,
-		Title:     row.Title,
-		Directory: row.Directory,
-		Agent:     row.Agent,
-		CreatedAt: time.UnixMilli(row.CreatedAt),
-		UpdatedAt: time.UnixMilli(row.UpdatedAt),
+		ID:        rowID,
+		ParentID:  parentID,
+		Title:     title,
+		Directory: directory,
+		Agent:     agent,
+		CreatedAt: time.UnixMilli(createdAt),
+		UpdatedAt: time.UnixMilli(updatedAt),
 	}, nil
 }
 
 // ListSessions 列出所有 session（按 created_at DESC）
 func (s *SQLiteStore) ListSessions(ctx context.Context) ([]*Session, error) {
-	rows, err := s.db.QueryxContext(ctx, `SELECT * FROM sessions ORDER BY created_at DESC`)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, parent_id, title, directory, agent, created_at, updated_at
+		 FROM sessions ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -168,26 +167,21 @@ func (s *SQLiteStore) ListSessions(ctx context.Context) ([]*Session, error) {
 
 	var out []*Session
 	for rows.Next() {
-		var r struct {
-			ID        string `db:"id"`
-			ParentID  string `db:"parent_id"`
-			Title     string `db:"title"`
-			Directory string `db:"directory"`
-			Agent     string `db:"agent"`
-			CreatedAt int64  `db:"created_at"`
-			UpdatedAt int64  `db:"updated_at"`
-		}
-		if err := rows.StructScan(&r); err != nil {
+		var (
+			id, parentID, title, directory, agent string
+			createdAt, updatedAt                  int64
+		)
+		if err := rows.Scan(&id, &parentID, &title, &directory, &agent, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, &Session{
-			ID:        r.ID,
-			ParentID:  r.ParentID,
-			Title:     r.Title,
-			Directory: r.Directory,
-			Agent:     r.Agent,
-			CreatedAt: time.UnixMilli(r.CreatedAt),
-			UpdatedAt: time.UnixMilli(r.UpdatedAt),
+			ID:        id,
+			ParentID:  parentID,
+			Title:     title,
+			Directory: directory,
+			Agent:     agent,
+			CreatedAt: time.UnixMilli(createdAt),
+			UpdatedAt: time.UnixMilli(updatedAt),
 		})
 	}
 	return out, rows.Err()
@@ -198,7 +192,7 @@ func (s *SQLiteStore) ListSessions(ctx context.Context) ([]*Session, error) {
 // Messages 返回 session 的所有消息（按 created_at 顺序）
 func (s *SQLiteStore) Messages(ctx context.Context, sessionID string, limit int) ([]*Message, error) {
 	// Step 1: 取所有 message 元数据（不取 parts）
-	rows, err := s.db.QueryxContext(ctx,
+	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, session_id, role, finish_reason, created_at, updated_at
 		 FROM messages WHERE session_id = ? ORDER BY created_at ASC`, sessionID)
 	if err != nil {
@@ -207,25 +201,21 @@ func (s *SQLiteStore) Messages(ctx context.Context, sessionID string, limit int)
 
 	var out []*Message
 	for rows.Next() {
-		var r struct {
-			ID           string `db:"id"`
-			SessionID    string `db:"session_id"`
-			Role         string `db:"role"`
-			FinishReason string `db:"finish_reason"`
-			CreatedAt    int64  `db:"created_at"`
-			UpdatedAt    int64  `db:"updated_at"`
-		}
-		if err := rows.StructScan(&r); err != nil {
+		var (
+			id, sid, role, finishReason string
+			createdAt, updatedAt        int64
+		)
+		if err := rows.Scan(&id, &sid, &role, &finishReason, &createdAt, &updatedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		out = append(out, &Message{
-			ID:           r.ID,
-			SessionID:    r.SessionID,
-			Role:         r.Role,
-			FinishReason: r.FinishReason,
-			CreatedAt:    time.UnixMilli(r.CreatedAt),
-			UpdatedAt:    time.UnixMilli(r.UpdatedAt),
+			ID:           id,
+			SessionID:    sid,
+			Role:         role,
+			FinishReason: finishReason,
+			CreatedAt:    time.UnixMilli(createdAt),
+			UpdatedAt:    time.UnixMilli(updatedAt),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -309,25 +299,25 @@ func (s *SQLiteStore) UpsertPart(ctx context.Context, p Part) error {
 
 // GetPart 按 ID 取 part
 func (s *SQLiteStore) GetPart(ctx context.Context, id string) (Part, error) {
-	var r struct {
-		MessageID string `db:"message_id"`
-		SessionID string `db:"session_id"`
-		Type      string `db:"type"`
-		Data      []byte `db:"data"`
-	}
-	err := s.db.GetContext(ctx, &r, `SELECT message_id, session_id, type, data FROM parts WHERE id = ?`, id)
+	var (
+		messageID, sessionID, partType string
+		data                           []byte
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT message_id, session_id, type, data FROM parts WHERE id = ?`, id).
+		Scan(&messageID, &sessionID, &partType, &data)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("part 不存在: %s", id)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return decodePart(id, r.MessageID, r.SessionID, r.Type, r.Data)
+	return decodePart(id, messageID, sessionID, partType, data)
 }
 
 // partsForMessage 取 message 的所有 parts（按 created_at）
 func (s *SQLiteStore) partsForMessage(ctx context.Context, messageID, sessionID string) ([]Part, error) {
-	rows, err := s.db.QueryxContext(ctx,
+	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, type, data FROM parts WHERE message_id = ? ORDER BY created_at ASC`, messageID)
 	if err != nil {
 		return nil, err

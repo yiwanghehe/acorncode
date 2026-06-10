@@ -2,7 +2,7 @@
 
 > 必读。新加 tool、发现新坑、改动代码风格，**立即**更新本文件。
 >
-> 当前 **v1.6**：6 个内置 tool + MCP 外部工具 + 3 toolcall 策略（Grammar 含 GBNF + Ollama format + Anthropic tool_choice + `--force-tool`）+ HTTP 鉴权 + 多 session + **293 测试**。详见 [README.md](README.md) §已实现。
+> 当前 **v1.8**：6 个内置 tool + MCP 外部工具 + 3 toolcall 策略（Grammar 含 GBNF + Ollama format + Anthropic tool_choice + `--force-tool` + HTTP 请求级 `force_tool`）+ HTTP 鉴权 + 多 session + **298 测试**（**3 第三方依赖**，v1.8 移除 sqlx）。详见 [README.md](README.md) §已实现。
 
 ## 1. 硬规则
 
@@ -23,7 +23,7 @@
 ### 1.4 依赖边界
 - **不要在 tool 里调 LLM**（死循环）
 - tool **不要 import** 任何 LLM/provider 包
-- v1.1 实际依赖（4 个）：bubbletea / lipgloss / modernc-sqlite / sqlx
+- v1.8 实际依赖（3 个）：bubbletea / lipgloss / modernc-sqlite（session 用标准库 `database/sql`）
 - 加新依赖前先想"用 stdlib 能不能做"
 
 ## 2. Tool 实现模板
@@ -75,12 +75,13 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 | 15 | MCP 多 server 一个坏拖垮全部 | `SetupFromConfigs` 单 server 失败记日志跳过，不致命 |
 | 16 | strategy.Prepare 没接线 → system 注入/GBNF 全失效 | `loop.buildRequest` 末尾必须调 `strategy.Prepare(req, tools)`（v1.4 修复） |
 | 17 | Ollama `format` 强制整段 JSON 与自由文本冲突 | `Grammar.ForceToolCall` 默认 false；仅显式开启才设 `req.Format` |
+| 18 | HTTP 并发请求共享 `cfg.Strategy` 改 ForceToolCall 会互相污染 | `strategyForRequest(force)` 在 force 时返回**独立** Grammar 实例，不动共享策略（v1.7） |
 
 ## 4. 跑命令
 
 ```bash
-make test              # 全部（~5 秒，247 测试）
-make test-llm          # LLM 客户端（10 + 7 anthropic = 17 测试）
+make test              # 全部（~5 秒，298 测试）
+make test-llm          # LLM 客户端（10 + 11 anthropic = 21 测试）
 make test-tool         # 工具（22+12+16+17+18+19+2 = 106 测试）
 make test-agent        # Agent 集成（5 测试）
 make vet               # go vet
