@@ -2,7 +2,7 @@
 
 > 必读。新加 tool、发现新坑、改动代码风格，**立即**更新本文件。
 >
-> 当前 **v1.8**：6 个内置 tool + MCP 外部工具 + 3 toolcall 策略（Grammar 含 GBNF + Ollama format + Anthropic tool_choice + `--force-tool` + HTTP 请求级 `force_tool`）+ HTTP 鉴权 + 多 session + **298 测试**（**3 第三方依赖**，v1.8 移除 sqlx）。详见 [README.md](README.md) §已实现。
+> 当前 **v1.8**：6 个内置 tool + MCP 外部工具 + 3 toolcall 策略（Grammar 含 GBNF + Ollama format + Anthropic tool_choice + `--force-tool` + HTTP 请求级 `force_tool`）+ HTTP 鉴权 + 多 session + **357 测试**（**3 第三方依赖**，v1.8 移除 sqlx）。详见 [README.md](README.md) §已实现。
 
 ## 1. 硬规则
 
@@ -80,7 +80,7 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 ## 4. 跑命令
 
 ```bash
-make test              # 全部（~5 秒，298 测试）
+make test              # 全部（~5 秒，357 测试）
 make test-llm          # LLM 客户端（10 + 11 anthropic = 21 测试）
 make test-tool         # 工具（22+12+16+17+18+19+2 = 106 测试）
 make test-agent        # Agent 集成（5 测试）

@@ -4,7 +4,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/)
-[![Tests 298](https://img.shields.io/badge/tests-298%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
+[![Tests 357](https://img.shields.io/badge/tests-357%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
 
 AcornCode 是一个**纯 Go 原生**的 coding agent，类似 [opencode](https://github.com/sst/opencode) 但做了关键简化：
 
@@ -100,7 +100,7 @@ make e2e               # 端到端（需本地 ollama）
 | **MCP stdio Client**（v1.2，让模型调外部工具） | `internal/mcp/client.go` | 15 |
 | CLI（TTY 检测 + 7 flag，`--force-tool` v1.6） | `cmd/acorn/main.go` | 13 |
 
-**总计**：**298 测试**，< 5 秒。**3 第三方依赖**（v1.8 移除 sqlx；MCP / GBNF 均 0 新依赖，纯 stdlib）。
+**总计**：**357 测试**，< 5 秒。**3 第三方依赖**（v1.8 移除 sqlx；MCP / GBNF 均 0 新依赖，纯 stdlib）。
 
 ## 当前状态
 
