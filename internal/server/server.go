@@ -464,8 +464,7 @@ func (s *Server) serveChatStream(w http.ResponseWriter, r *http.Request, req Cha
 
 	eventBus := bus.New()
 	defer eventBus.Close()
-	teardown := s.subscribeAndForward(r.Context(), eventBus, sessID, w, flusher)
-	defer teardown()
+	s.subscribeAndForward(r.Context(), eventBus, sessID, w, flusher)
 
 	s.writeSSE(w, flusher, "session", map[string]any{"session_id": sessID})
 	s.appendUserMessage(r.Context(), sessID, req.Message)
@@ -494,8 +493,11 @@ func (s *Server) strategyForRequest(forceTool bool) toolcall.Strategy {
 	return g
 }
 
-// subscribeAndForward 订阅 bus 4 topic → 转发到 SSE
-func (s *Server) subscribeAndForward(ctx context.Context, b *bus.Bus, sessID string, w http.ResponseWriter, flusher http.Flusher) func() {
+// subscribeAndForward 订阅 bus 4 topic → 转发到 SSE。
+//
+// 转发 goroutine 在 ctx 取消或 bus 关闭（调用方 defer eventBus.Close()）时自动退出，
+// 因此无需返回显式的 teardown（R8：原先返回的 teardown 是空操作）。
+func (s *Server) subscribeAndForward(ctx context.Context, b *bus.Bus, sessID string, w http.ResponseWriter, flusher http.Flusher) {
 	type sub struct {
 		topic string
 		ch    <-chan bus.Event
@@ -529,12 +531,6 @@ func (s *Server) subscribeAndForward(ctx context.Context, b *bus.Bus, sessID str
 				}
 			}
 		}(sub.topic, sub.ch)
-	}
-
-	return func() {
-		for _, sub := range subs {
-			_ = sub // 留给 ctx cancel 关
-		}
 	}
 }
 

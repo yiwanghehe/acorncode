@@ -85,26 +85,7 @@ func (p *Prompted) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-c
 	go func() {
 		defer close(out)
 		s := &state{}
-
-		emitText := func(text string) bool {
-			if text == "" {
-				return true
-			}
-			select {
-			case out <- llm.TextDelta{Text: text}:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
-		emit := func(ev llm.StreamEvent) bool {
-			select {
-			case out <- ev:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
+		em := newEmitter(ctx, out)
 
 		for {
 			select {
@@ -114,7 +95,7 @@ func (p *Prompted) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-c
 				if !ok {
 					// 流结束：flush 残留 text
 					if !s.inCall {
-						emitText(s.buf.String())
+						em.Text(s.buf.String())
 					}
 					return
 				}
@@ -123,16 +104,16 @@ func (p *Prompted) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-c
 				} else if chunk.Type == "finish" {
 					// 流结束
 					if !s.inCall {
-						emitText(s.buf.String())
+						em.Text(s.buf.String())
 					}
 					var usage llm.Usage
 					if chunk.Data != "" {
 						_ = json.Unmarshal([]byte(chunk.Data), &usage)
 					}
-					emit(llm.FinishEvent{Reason: "stop", Usage: usage})
+					em.Event(llm.FinishEvent{Reason: "stop", Usage: usage})
 					return
 				} else if chunk.Type == "error" {
-					emit(llm.ErrorEvent{Err: fmt.Errorf("%s", chunk.Data)})
+					em.Event(llm.ErrorEvent{Err: fmt.Errorf("%s", chunk.Data)})
 					return
 				}
 				// 其他类型（tool_call 等）忽略
@@ -146,7 +127,7 @@ func (p *Prompted) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-c
 						}
 						// flush text 在 <tool_call> 之前
 						if loc[0] > 0 {
-							if !emitText(s.buf.String()[:loc[0]]) {
+							if !em.Text(s.buf.String()[:loc[0]]) {
 								return
 							}
 						}
@@ -185,7 +166,7 @@ func (p *Prompted) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-c
 						if call.Arguments == nil {
 							call.Arguments = json.RawMessage("{}")
 						}
-						if !emit(llm.ToolCallEnd{
+						if !em.Event(llm.ToolCallEnd{
 							CallID: s.callID,
 							Name:   call.Name,
 							Args:   call.Arguments,

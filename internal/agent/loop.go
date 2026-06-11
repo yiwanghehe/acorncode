@@ -85,8 +85,8 @@ type Loop struct {
 	instr     *instruction.Loader
 	compactor compaction.Compactor // 可选：v1.0.3 起
 
-	state LoopState
-	turn  int
+	state   LoopState
+	turn    int
 	breaker *circuitBreaker
 }
 

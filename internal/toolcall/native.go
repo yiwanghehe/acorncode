@@ -45,6 +45,7 @@ func (n *Native) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-cha
 	out := make(chan llm.StreamEvent, 64)
 	go func() {
 		defer close(out)
+		em := newEmitter(ctx, out)
 		for {
 			select {
 			case <-ctx.Done():
@@ -54,9 +55,7 @@ func (n *Native) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-cha
 					return
 				}
 				if ev, emit := n.translate(chunk); emit {
-					select {
-					case out <- ev:
-					case <-ctx.Done():
+					if !em.Event(ev) {
 						return
 					}
 				}
