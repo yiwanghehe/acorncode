@@ -57,3 +57,8 @@ acorncode.local.json
 # 临时构建目录
 tmp/
 temp/
+
+# Box 会话工作目录产物（不提交）
+.box-desens/
+/output/
+/.session_tmps/

@@ -68,6 +68,8 @@ type SessionStore interface {
 	UpsertPart(ctx context.Context, p session.Part) error
 	GetPart(ctx context.Context, id string) (session.Part, error)
 	SetFinishReason(ctx context.Context, messageID string, reason string) error
+	// ReplaceMessages 原子替换 session 的全部消息（含 parts），供 Compaction 写回压缩结果
+	ReplaceMessages(ctx context.Context, sessionID string, msgs []*session.Message) error
 }
 
 // Loop 是单 session 的状态机实例。
@@ -389,8 +391,10 @@ func (l *Loop) executeToolCalls(ctx context.Context, calls []ToolCall) error {
 // Compaction（v1.0.3 实现）
 // ============================================================
 
-// compact 是压缩入口。v1.0.3 起调 compactor。
-// 若 compactor 未注入，走 v0.1 stub：返错让 Loop 退到 errFatal。
+// compact 是压缩入口（v1.0.3 起调 compactor；v1.10 起持久化写回）。
+// 流程：取全部消息 → 调 compactor 摘要 → 把压缩结果原子写回 store，
+// 让后续 turn 的 buildRequest 读到的就是压缩后的短历史，真正释放 token 预算。
+// compactor 未注入时返错让 Loop 退到 errFatal。
 func (l *Loop) compact(ctx context.Context) error {
 	slog.InfoContext(ctx, "compact 触发", "session_id", l.sessionID)
 	if l.compactor == nil {
@@ -415,18 +419,55 @@ func (l *Loop) compact(ctx context.Context) error {
 	// 3. 调 compactor
 	newMsgs, err := l.compactor.Compact(ctx, llmMsgs)
 	if err != nil {
-		slog.WarnContext(ctx, "compact 失败，使用原消息", "err", err)
+		slog.WarnContext(ctx, "compact 失败，保留原消息", "err", err)
 		// 不阻断：让 Loop 继续用原 history（可能超 token，但 try）
 		return nil
 	}
 
-	// 4. 写回 store（v1.0.3 简化：仅打日志，不持久化压缩结果）
-	// 真正持久化要清空原 messages 再追加新 summary，留给 v1.0.4
-	slog.InfoContext(ctx, "compact 完成",
+	// 4. 没压缩掉任何东西（数量未减）则不写回，省一次 DB 事务
+	if len(newMsgs) >= len(llmMsgs) {
+		slog.InfoContext(ctx, "compact 无收益，跳过写回",
+			"原消息数", len(llmMsgs), "压缩后数", len(newMsgs))
+		return nil
+	}
+
+	// 5. 把压缩后的 llm.Message 重建为 session.Message 并原子写回。
+	//    每条压缩结果对应一条仅含单个 TextPart 的消息。
+	rebuilt := l.rebuildMessages(newMsgs)
+	if err := l.store.ReplaceMessages(ctx, l.sessionID, rebuilt); err != nil {
+		// 写回失败不阻断当前 turn：原消息仍在，下一轮再试
+		slog.WarnContext(ctx, "compact 写回失败，保留原消息", "err", err)
+		return nil
+	}
+
+	slog.InfoContext(ctx, "compact 完成并写回",
 		"原消息数", len(llmMsgs),
 		"压缩后数", len(newMsgs),
 	)
 	return nil
+}
+
+// rebuildMessages 把 compactor 返回的 []llm.Message 重建为可持久化的
+// []*session.Message。每条消息生成一个 TextPart 承载文本内容，ID 统一走
+// internal/id 生成，保证写回 store 后能被 Messages/GetPart 正常读出。
+func (l *Loop) rebuildMessages(msgs []llm.Message) []*session.Message {
+	out := make([]*session.Message, 0, len(msgs))
+	for _, m := range msgs {
+		msgID := newID("msg")
+		part := &session.TextPart{
+			ID:        newID("prt"),
+			MessageID: msgID,
+			SessionID: l.sessionID,
+			Text:      m.Content,
+		}
+		out = append(out, &session.Message{
+			ID:        msgID,
+			SessionID: l.sessionID,
+			Role:      m.Role,
+			Parts:     []session.Part{part},
+		})
+	}
+	return out
 }
 
 // extractText 从 message 抽 text

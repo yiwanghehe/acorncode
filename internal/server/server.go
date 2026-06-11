@@ -49,6 +49,7 @@ type Store interface {
 	GetPart(ctx context.Context, id string) (session.Part, error)
 	SetFinishReason(ctx context.Context, messageID string, reason string) error
 	Messages(ctx context.Context, sessionID string, limit int) ([]*session.Message, error)
+	ReplaceMessages(ctx context.Context, sessionID string, msgs []*session.Message) error
 }
 
 // Config 启动 server 所需的依赖

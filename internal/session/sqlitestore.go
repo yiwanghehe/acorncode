@@ -263,6 +263,80 @@ func (s *SQLiteStore) AppendMessage(ctx context.Context, msg *Message) error {
 	return err
 }
 
+// ReplaceMessages 原子替换 session 的全部消息（含 parts）。
+// 用于 Compaction：在一个事务里先删除该 session 旧的 messages/parts，
+// 再按 msgs 顺序重新写入。任一步失败整体回滚，避免半压缩状态。
+func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, msgs []*Message) error {
+	if sessionID == "" {
+		return fmt.Errorf("session ID 不能为空")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	// 出错时回滚；成功 commit 后 rollback 为 no-op
+	defer func() { _ = tx.Rollback() }()
+
+	// 1. 删除该 session 现有的所有 parts + messages
+	if _, err := tx.ExecContext(ctx, `DELETE FROM parts WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("删除旧 parts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("删除旧 messages: %w", err)
+	}
+
+	// 2. 按顺序写入新消息及其 parts。
+	//    用递增的毫秒时间戳保证 created_at 顺序与 msgs 切片顺序一致
+	//    （同一纳秒内多条消息 time.Now() 可能相同，这里显式 +i 毫秒避免乱序）。
+	base := time.Now().UnixMilli()
+	for i, msg := range msgs {
+		if msg.ID == "" {
+			return fmt.Errorf("message ID 不能为空")
+		}
+		msg.SessionID = sessionID
+		ts := base + int64(i)
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO messages (id, session_id, role, finish_reason, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			msg.ID, sessionID, msg.Role, msg.FinishReason, ts, ts,
+		); err != nil {
+			return fmt.Errorf("写入 message %s: %w", msg.ID, err)
+		}
+		msg.CreatedAt = time.UnixMilli(ts)
+		msg.UpdatedAt = time.UnixMilli(ts)
+
+		for j, p := range msg.Parts {
+			id, sessID, msgID, partType, data, encErr := encodePart(p)
+			if encErr != nil {
+				return fmt.Errorf("编码 part: %w", encErr)
+			}
+			if id == "" {
+				return fmt.Errorf("part ID 不能为空")
+			}
+			// part 的 session_id/message_id 以入参为准，防御外部传错
+			if sessID == "" {
+				sessID = sessionID
+			}
+			if msgID == "" {
+				msgID = msg.ID
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO parts (id, message_id, session_id, type, data, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				id, msgID, sessID, partType, data, ts+int64(j),
+			); err != nil {
+				return fmt.Errorf("写入 part %s: %w", id, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
 // SetFinishReason 设置 message 的 finish_reason
 func (s *SQLiteStore) SetFinishReason(ctx context.Context, messageID string, reason string) error {
 	now := time.Now()

@@ -2,7 +2,7 @@
 
 > 必读。新加 tool、发现新坑、改动代码风格，**立即**更新本文件。
 >
-> 当前 **v1.9**：6 个内置 tool + MCP 外部工具 + 3 toolcall 策略（Grammar 含 GBNF + Ollama format + Anthropic tool_choice + `--force-tool` + HTTP 请求级 `force_tool`）+ HTTP 鉴权 + 多 session + **369 测试**（**3 第三方依赖**）。v1.9 完成代码结构重构（单一职责 R1–R8）。详见 [README.md](README.md) §已实现。
+> 当前 **v1.10**：6 个内置 tool + MCP 外部工具 + 3 toolcall 策略（Grammar 含 GBNF + Ollama format + Anthropic tool_choice + `--force-tool` + HTTP 请求级 `force_tool`）+ HTTP 鉴权 + 多 session + **Compaction 持久化闭环** + **真实 tokenizer 估算** + **389 测试**（**3 第三方依赖**）。v1.9 完成代码结构重构（单一职责 R1–R8）。详见 [README.md](README.md) §已实现。
 
 ## 1. 硬规则
 
@@ -31,6 +31,8 @@
 - **熔断逻辑**：在 `internal/agent/circuit.go` 的 `circuitBreaker`，不要塞回 `Loop`
 - **toolcall 流式发送**：用 `emitter`（`Event`/`Text`），不要再内联 ctx-aware `select`
 - **server handler**：保持薄入口（解析校验）+ `serveChatStream` 编排，单函数单职责
+- **token 估算**：统一走 `internal/tokenizer.Count`，不要再写 `len(s)/4`（v1.10）
+- **Compaction 写回**：压缩结果必须经 `store.ReplaceMessages` 原子写回，不要只打日志（v1.10）
 - 发现某函数 > ~60 行或承担 ≥3 个明显职责，先拆再加功能
 
 ## 2. Tool 实现模板
@@ -83,6 +85,10 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 | 16 | strategy.Prepare 没接线 → system 注入/GBNF 全失效 | `loop.buildRequest` 末尾必须调 `strategy.Prepare(req, tools)`（v1.4 修复） |
 | 17 | Ollama `format` 强制整段 JSON 与自由文本冲突 | `Grammar.ForceToolCall` 默认 false；仅显式开启才设 `req.Format` |
 | 18 | HTTP 并发请求共享 `cfg.Strategy` 改 ForceToolCall 会互相污染 | `strategyForRequest(force)` 在 force 时返回**独立** Grammar 实例，不动共享策略（v1.7） |
+| 19 | Compaction 只摘要不写回 → 长 session 压缩无效 | `compact()` 调 `store.ReplaceMessages` 原子写回压缩结果（v1.10） |
+| 20 | 压缩写回的 summary 是 `system` 角色，`toModelMessages` 只认 user/assistant 会丢摘要 | `toModelMessages` 增加 `system` 分支（v1.10） |
+| 21 | `ReplaceMessages` 半途失败留下半压缩状态 | SQLite 用事务（DELETE+INSERT 整体回滚）；Memory 持写锁（v1.10） |
+| 22 | `estimateTokens` 用 len/4 中文严重低估、且漏算工具 args/schema | 接入 `internal/tokenizer` 启发式 + 补算 ToolPart/JSONSchema（v1.10） |
 
 ## 4. 跑命令
 

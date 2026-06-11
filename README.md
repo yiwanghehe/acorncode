@@ -1,6 +1,6 @@
 # AcornCode
 
-> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.9**
+> 本地小模型优先的 Go 编码 Agent · 单二进制 · 自举开发 · **v1.10**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/)
@@ -71,7 +71,7 @@ make ci                # fmt + vet + test
 make e2e               # 端到端（需本地 ollama）
 ```
 
-## 已实现（v1.8）
+## 已实现（v1.10）
 
 | 模块 | 文件 | 测试 |
 |------|------|------|
@@ -101,12 +101,15 @@ make e2e               # 端到端（需本地 ollama）
 | CLI（TTY 检测 + 7 flag，`--force-tool` v1.6） | `cmd/acorn/main.go` | 13 |
 | **统一 ID 生成**（v1.9 R2，零依赖） | `internal/id/id.go` | 5 |
 | **熔断器**（v1.9 R3，三道熔断从 Loop 剥离） | `internal/agent/circuit.go` | 7 |
+| **ReplaceMessages**（v1.10，Compaction 原子写回） | `internal/session/*store.go` | +4 |
+| **tokenizer**（v1.10，启发式估算，纯 stdlib） | `internal/tokenizer/tokenizer.go` | 11 |
+| **compact 持久化闭环**（v1.10） | `internal/agent/loop.go` | +4 |
 
-**总计**：**369 测试**，< 5 秒。**3 第三方依赖**（v1.8 移除 sqlx；MCP / GBNF 均 0 新依赖，纯 stdlib）。
+**总计**：**389 测试**，< 5 秒。**3 第三方依赖**（v1.8 移除 sqlx；MCP / GBNF / tokenizer 均 0 新依赖，纯 stdlib）。
 
 ## 当前状态
 
-**v1.9 完整版** — 6 个 tool + MCP 外部工具 + TUI + SQLite + 多 provider + 三 toolcall 策略（含 GBNF 约束 + 强制工具调用）+ HTTP API（鉴权 + 多 session + 请求级 `force_tool`）+ Permission 弹窗 + Compaction。**3 第三方依赖**。v1.9 完成代码结构重构（单一职责，R1–R8）。
+**v1.10 完整版** — 6 个 tool + MCP 外部工具 + TUI + SQLite + 多 provider + 三 toolcall 策略（含 GBNF 约束 + 强制工具调用）+ HTTP API（鉴权 + 多 session + 请求级 `force_tool`）+ Permission 弹窗 + **Compaction 持久化闭环** + **真实 tokenizer 估算**。**3 第三方依赖**。v1.9 完成代码结构重构（单一职责，R1–R8）；v1.10 补齐 Compaction 写回与 tokenizer 两个 P0 缺口。
 
 ### CLI 完整
 

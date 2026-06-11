@@ -5,6 +5,7 @@ package agent
 import (
 	"acorncode/internal/llm"
 	"acorncode/internal/session"
+	"acorncode/internal/tokenizer"
 	"acorncode/internal/tool"
 )
 
@@ -75,26 +76,44 @@ func toModelMessages(history []*session.Message) []llm.Message {
 					msg.Content += tp.Text
 				}
 			}
+		case "system":
+			// Compaction 写回的「历史摘要」以 system 角色存在历史里，
+			// 必须转出来让后续 turn 的模型看到，否则压缩等于丢上下文。
+			for _, p := range m.Parts {
+				if tp, ok := p.(*session.TextPart); ok {
+					msg.Content += tp.Text
+				}
+			}
 		}
 		out = append(out, msg)
 	}
 	return out
 }
 
-// estimateTokens 粗估 token 数。
-// TODO: 替换为真正的 tokenizer（tiktoken-go 或类似）
+// estimateTokens 估算一次请求的 token 数（history + 工具定义）。
+// v1.10 起改用 internal/tokenizer 启发式估算（纯 stdlib，0 依赖），
+// 比旧的 len/4 在中文与工具调用场景准得多。仅用于 compact 触发判断，
+// 不要求精确，只要单调可比即可。
 func estimateTokens(history []*session.Message, tools []tool.Definition) int {
-	// 粗估：每 4 字符 ≈ 1 token
 	total := 0
 	for _, m := range history {
 		for _, p := range m.Parts {
-			if tp, ok := p.(*session.TextPart); ok {
-				total += len(tp.Text) / 4
+			switch tp := p.(type) {
+			case *session.TextPart:
+				total += tokenizer.Count(tp.Text)
+			case *session.ReasoningPart:
+				total += tokenizer.Count(tp.Text)
+			case *session.ToolPart:
+				// 工具调用的 args 与输出也占上下文，之前被完全漏算
+				total += tokenizer.Count(string(tp.Args))
+				total += tokenizer.Count(tp.Output)
 			}
 		}
 	}
 	for _, t := range tools {
-		total += len(t.Description) / 4
+		total += tokenizer.Count(t.Description)
+		// schema 体积不小，也计入预算
+		total += tokenizer.Count(string(t.JSONSchema))
 	}
 	return total
 }

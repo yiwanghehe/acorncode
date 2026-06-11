@@ -1,7 +1,7 @@
-# AcornCode 架构（v1.7 完整版）
+# AcornCode 架构（v1.10 完整版）
 
 > 当前真实实现的架构。涵盖 v1.0 完整版 + v1.1 HTTP 可用 + v1.2 MCP + v1.3 GBNF +
-> v1.4~v1.7 工具调用约束端到端打通。v2+ 推迟内容（分布式）不在此文档。
+> v1.4~v1.7 工具调用约束端到端打通 + v1.10 Compaction 持久化闭环 + tokenizer。v2+ 推迟内容（分布式）不在此文档。
 
 ## 1. 一句话
 
@@ -128,6 +128,7 @@ type Store interface {
     CreateSession / GetSession / ListSessions
     Messages / AppendMessage / SetFinishReason
     UpsertPart / GetPart
+    ReplaceMessages   // v1.10：Compaction 原子写回压缩结果
 }
 ```
 
@@ -178,10 +179,22 @@ type Store interface {
 | 连续 bash 失败 N 次 | 5 | 跳出 bash，进 Errored |
 | 同一错误签名重复 N 次 | 3 | 跳出循环，进 Errored |
 
-### Compaction（v1.0.3）
+### Compaction（v1.0.3 摘要；v1.10 持久化闭环）
 
-`errNeedCompact` 触发 → `l.compactor.Compact(ctx, history)` → 摘要老消息保留最近 6 条 → 继续 turn。
+`errNeedCompact` 触发 → `l.compactor.Compact(ctx, history)` → 摘要老消息保留最近 N 条 → 继续 turn。
 当前实现：`SimpleCompactor`（调同 LLM 摘要），失败时返原 history 不阻断。
+
+**v1.10 持久化闭环**：压缩结果不再只打日志，而是经 `store.ReplaceMessages(sessionID, msgs)`
+**原子写回**——`rebuildMessages` 把 `[]llm.Message` 重建为 `[]*session.Message`（每条 1 个 TextPart），
+SQLite 用事务（DELETE 旧 + INSERT 新，整体回滚）替换。后续 turn 的 `buildRequest` 读到的就是
+压缩后的短历史，真正释放 token 预算。摘要以 `system` 角色存历史，`toModelMessages` 增 system 分支
+保证不丢。保守策略：无收益跳过写回、出错保留原消息。
+
+### Token 估算（v1.10 tokenizer）
+
+`agent.estimateTokens` 决定何时触发 compact。v1.10 起改用 `internal/tokenizer.Count`（纯 stdlib
+启发式：ASCII 4 字符/token、数字 3 位/token、CJK 每字 1 token、标点 1 token、emoji 2 token），
+替换旧的 `len/4`（中文场景严重低估），并补算工具调用 args/output 与 JSON Schema 的 token。
 
 ## 5. 6 个 Tool（v0.5+，v1.0 不变）
 

@@ -2,6 +2,36 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.10.0] - 2026-06
+
+### Compaction 持久化闭环 + 真实 tokenizer 估算
+
+补齐两个长期标注「留待后续」的 P0 缺口，**0 新第三方依赖**（纯 stdlib），测试全绿。
+
+**Compaction 持久化（闭合 v1.0.3 留的坑）**：
+
+- 之前 `agent.Loop.compact()` 调 compactor 拿到摘要后**只打日志、不写回**，长 session
+  压缩等于无效。现在压缩结果会**原子写回 store**，后续 turn 读到的就是压缩后的短历史，
+  真正释放 token 预算。
+- **`SessionStore.ReplaceMessages(ctx, sessionID, msgs)`**：新增接口方法，原子替换某 session
+  的全部消息（含 parts）。`SQLiteStore` 用**事务**实现（先 `DELETE` 旧 messages/parts 再按序
+  `INSERT`，失败整体回滚，避免半压缩状态）；`MemoryStore` 持写锁实现等价语义。
+- **`rebuildMessages`**：把 compactor 返回的 `[]llm.Message` 重建为可持久化的
+  `[]*session.Message`（每条一个 TextPart，ID 走 `internal/id`）。
+- **`toModelMessages` 支持 `system` 角色**：压缩写回的摘要以 system 消息存在历史里，
+  之前 `toModelMessages` 只处理 user/assistant 会把摘要丢掉，现已修复。
+- 保守策略：压缩无收益（数量未减）跳过写回；compactor 出错或写回失败均保留原消息、不阻断当前 turn。
+
+**真实 tokenizer（替换 len/4 粗估）**：
+
+- 新增 **`internal/tokenizer`** 包（纯 stdlib）：启发式逼近主流 BPE 分词器（GPT/Qwen/Llama）
+  的统计规律——ASCII 单词 4 字符/token、数字 3 位/token、CJK 每字 1 token、标点各 1 token、
+  emoji 等 2 token。把中文场景从 `len/4` 的严重低估收敛到约 ±15%。
+- **`agent.estimateTokens` 接入 tokenizer**，并补算**工具调用的 args/output 与工具 JSON Schema**
+  的 token（之前完全漏算，导致 compact 触发偏晚）。
+
+**测试**：tokenizer +11、session ReplaceMessages +4、agent compact +4（**约 389 运行单元**，全绿）。
+
 ## [1.9.0] - 2026-06
 
 ### 代码结构重构（单一职责 / 高内聚低耦合）
@@ -258,6 +288,7 @@ v1.0 完整版上加 2 个能力，让 server 模式可上生产。
 
 - 分布式部署
 
+[1.10.0]: https://github.com/yiwanghehe/acorncode/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/yiwanghehe/acorncode/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/yiwanghehe/acorncode/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/yiwanghehe/acorncode/compare/v1.6.0...v1.7.0

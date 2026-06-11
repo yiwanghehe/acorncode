@@ -390,3 +390,103 @@ func TestSQLiteStore_UnknownPartType(t *testing.T) {
 		// 任何 err 即可
 	}
 }
+
+// ========== ReplaceMessages（Compaction 写回，v1.10）==========
+
+// TestSQLiteStore_ReplaceMessages_Basic 验证替换后旧消息消失、新消息可读
+func TestSQLiteStore_ReplaceMessages_Basic(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	sess := &Session{ID: "sess_rm", Title: "rm"}
+	if err := s.CreateSession(ctx, sess); err != nil {
+		t.Fatalf("Create err: %v", err)
+	}
+
+	// 写入 4 条旧消息（各带一个 TextPart）
+	for i, role := range []string{"user", "assistant", "user", "assistant"} {
+		msg := &Message{ID: "old_" + itoa(i), SessionID: "sess_rm", Role: role}
+		if err := s.AppendMessage(ctx, msg); err != nil {
+			t.Fatalf("Append err: %v", err)
+		}
+		part := &TextPart{ID: "oldp_" + itoa(i), MessageID: msg.ID, SessionID: "sess_rm", Text: "old" + itoa(i)}
+		if err := s.UpsertPart(ctx, part); err != nil {
+			t.Fatalf("UpsertPart err: %v", err)
+		}
+	}
+
+	// 替换为 2 条新消息（1 system summary + 1 recent）
+	newMsgs := []*Message{
+		{ID: "new_0", SessionID: "sess_rm", Role: "system", Parts: []Part{
+			&TextPart{ID: "newp_0", MessageID: "new_0", SessionID: "sess_rm", Text: "summary"},
+		}},
+		{ID: "new_1", SessionID: "sess_rm", Role: "user", Parts: []Part{
+			&TextPart{ID: "newp_1", MessageID: "new_1", SessionID: "sess_rm", Text: "recent"},
+		}},
+	}
+	if err := s.ReplaceMessages(ctx, "sess_rm", newMsgs); err != nil {
+		t.Fatalf("ReplaceMessages err: %v", err)
+	}
+
+	// 验证：只剩 2 条，顺序正确，parts 完整
+	got, err := s.Messages(ctx, "sess_rm", 0)
+	if err != nil {
+		t.Fatalf("Messages err: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("替换后消息数 = %d, 期望 2", len(got))
+	}
+	if got[0].Role != "system" || got[1].Role != "user" {
+		t.Errorf("顺序错: [0]=%s [1]=%s", got[0].Role, got[1].Role)
+	}
+	if len(got[0].Parts) != 1 {
+		t.Fatalf("summary 消息 parts 数 = %d, 期望 1", len(got[0].Parts))
+	}
+	if tp, ok := got[0].Parts[0].(*TextPart); !ok || tp.Text != "summary" {
+		t.Errorf("summary 文本错: %+v", got[0].Parts[0])
+	}
+
+	// 旧 part 应已删除
+	if _, err := s.GetPart(ctx, "oldp_0"); err == nil {
+		t.Error("旧 part 应已删除")
+	}
+}
+
+// TestSQLiteStore_ReplaceMessages_Empty 验证替换为空列表会清空全部消息
+func TestSQLiteStore_ReplaceMessages_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	_ = s.CreateSession(ctx, &Session{ID: "sess_e"})
+	_ = s.AppendMessage(ctx, &Message{ID: "m0", SessionID: "sess_e", Role: "user"})
+
+	if err := s.ReplaceMessages(ctx, "sess_e", nil); err != nil {
+		t.Fatalf("ReplaceMessages err: %v", err)
+	}
+	got, _ := s.Messages(ctx, "sess_e", 0)
+	if len(got) != 0 {
+		t.Errorf("清空后消息数 = %d, 期望 0", len(got))
+	}
+}
+
+// TestSQLiteStore_ReplaceMessages_EmptyID 验证空 message ID 报错（事务回滚）
+func TestSQLiteStore_ReplaceMessages_EmptyID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	_ = s.CreateSession(ctx, &Session{ID: "sess_bad"})
+	_ = s.AppendMessage(ctx, &Message{ID: "keep", SessionID: "sess_bad", Role: "user"})
+
+	err := s.ReplaceMessages(ctx, "sess_bad", []*Message{{ID: "", Role: "user"}})
+	if err == nil {
+		t.Fatal("空 message ID 应报错")
+	}
+	// 事务回滚：原消息仍在
+	got, _ := s.Messages(ctx, "sess_bad", 0)
+	if len(got) != 1 {
+		t.Errorf("回滚后消息数 = %d, 期望 1（原消息仍在）", len(got))
+	}
+}
+
+// itoa 测试用小工具（避免引入 strconv 影响阅读）
+func itoa(i int) string {
+	return string(rune('0' + i))
+}

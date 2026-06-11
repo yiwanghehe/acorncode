@@ -170,3 +170,45 @@ func newTestID2(i int) string {
 	}
 	return newTestID2(i/10) + string(chars[i%10])
 }
+
+// TestMemoryStore_ReplaceMessages 验证内存版替换行为与 SQLite 一致（v1.10）
+func TestMemoryStore_ReplaceMessages(t *testing.T) {
+	m := NewMemoryStore()
+	ctx := context.Background()
+	_ = m.CreateSession(ctx, &Session{ID: "s1"})
+
+	// 旧消息 + parts（part 同时挂到 msg.Parts，模拟真实 processor 行为）
+	for i, role := range []string{"user", "assistant", "user"} {
+		part := &TextPart{ID: "op" + itoa(i), MessageID: "o" + itoa(i), SessionID: "s1", Text: "x"}
+		msg := &Message{ID: "o" + itoa(i), SessionID: "s1", Role: role, Parts: []Part{part}}
+		_ = m.AppendMessage(ctx, msg)
+		_ = m.UpsertPart(ctx, part)
+	}
+
+	newMsgs := []*Message{
+		{ID: "n0", SessionID: "s1", Role: "system", Parts: []Part{
+			&TextPart{ID: "np0", MessageID: "n0", SessionID: "s1", Text: "sum"},
+		}},
+		{ID: "n1", SessionID: "s1", Role: "assistant", Parts: []Part{
+			&TextPart{ID: "np1", MessageID: "n1", SessionID: "s1", Text: "last"},
+		}},
+	}
+	if err := m.ReplaceMessages(ctx, "s1", newMsgs); err != nil {
+		t.Fatalf("ReplaceMessages err: %v", err)
+	}
+
+	got, _ := m.Messages(ctx, "s1", 0)
+	if len(got) != 2 {
+		t.Fatalf("替换后消息数 = %d, 期望 2", len(got))
+	}
+	if got[0].Role != "system" || got[1].Role != "assistant" {
+		t.Errorf("顺序错: %s %s", got[0].Role, got[1].Role)
+	}
+	// 新 part 可读、旧 part 已删
+	if _, err := m.GetPart(ctx, "np0"); err != nil {
+		t.Errorf("新 part 应可读: %v", err)
+	}
+	if _, err := m.GetPart(ctx, "op0"); err == nil {
+		t.Error("旧 part 应已删除")
+	}
+}

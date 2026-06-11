@@ -140,6 +140,50 @@ func partID(p Part) string {
 	return ""
 }
 
+// ReplaceMessages 原子替换 session 的全部消息（含 parts）。
+// 用于 Compaction：先清空该 session 旧的 messages/parts/order，
+// 再按 msgs 顺序重新写入（每条消息及其 Parts）。
+// 持写锁保证替换过程对其他读写不可见中间态。
+func (m *MemoryStore) ReplaceMessages(ctx context.Context, sessionID string, msgs []*Message) error {
+	if sessionID == "" {
+		return fmt.Errorf("session ID 不能为空")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 1. 删除该 session 现有的所有 message + 其 parts
+	for _, oldID := range m.order[sessionID] {
+		if old, ok := m.messages[oldID]; ok {
+			for _, p := range old.Parts {
+				delete(m.parts, partID(p))
+			}
+		}
+		delete(m.messages, oldID)
+	}
+	delete(m.order, sessionID)
+
+	// 2. 按顺序写入新消息及其 parts
+	now := time.Now()
+	for _, msg := range msgs {
+		if msg.ID == "" {
+			return fmt.Errorf("message ID 不能为空")
+		}
+		msg.SessionID = sessionID
+		if msg.CreatedAt.IsZero() {
+			msg.CreatedAt = now
+		}
+		msg.UpdatedAt = now
+		m.messages[msg.ID] = msg
+		m.order[sessionID] = append(m.order[sessionID], msg.ID)
+		for _, p := range msg.Parts {
+			if id := partID(p); id != "" {
+				m.parts[id] = p
+			}
+		}
+	}
+	return nil
+}
+
 // SetFinishReason 设置 message 的 finish_reason
 func (m *MemoryStore) SetFinishReason(ctx context.Context, messageID string, reason string) error {
 	m.mu.Lock()
