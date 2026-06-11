@@ -3,7 +3,7 @@
 ## 前置
 
 - Go 1.25+
-- 跑 `make test` 确认 357 测试全过
+- 跑 `make test` 确认 389 测试全过
 - 推荐 Ollama + `qwen2.5-coder:7b` 跑端到端
 
 ## 工作流
