@@ -2,6 +2,32 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.9.0] - 2026-06
+
+### 代码结构重构（单一职责 / 高内聚低耦合）
+
+全面梳理代码结构，按单一职责原则拆解职责过重的函数、消除重复，**0 行为变化、0 新依赖**，
+每步独立提交且测试全绿。
+
+**8 项重构（R1–R8）**：
+
+- **R1 拆解 `server.handleChat` 上帝函数**（~85 行/7 职责 → 8 个单一职责函数）：
+  `decodeChatRequest` / `setupSSE` / `resolveSessionID` / `ensureSession` /
+  `appendUserMessage` / `newChatLoop` / `runChatLoop` / `serveChatStream`
+- **R2 统一 ID 生成**：新增零依赖 `internal/id` 包（`New`/`Short`），消除 agent/server/
+  permission/cmd 中 4 份重复的 base36 时间戳实现；counter 防同纳秒冲突
+- **R3 抽出 `circuitBreaker`**：三道熔断（同 call 重试 / bash 连续失败 / 同错误签名）的
+  计数与判定从 `Loop` 剥离到 `internal/agent/circuit.go`，Loop 专注状态机调度
+- **R4 提取 `sessionToInfo`**：消除 create/list/get 三处 `SessionInfo` 重复映射
+- **R5 提取 `buildRetryHint`**：native/prompted/grammar 三策略同构的 RetryHint 共用结构，仅传文案
+- **R6 去除 `handleChatByID` 的 body hack**：不再 marshal 回 `r.Body`，解析后直接调 `serveChatStream(req)`
+- **R7 提取 `emitter` helper**：封装 ctx-aware channel 发送，统一 native/prompted/grammar
+  中重复的 `emit`/`emitText` 闭包与内联 select
+- **R8 清理 `subscribeAndForward` 空 teardown**：返回的 teardown 是空操作，改为不返回，
+  goroutine 靠 ctx 取消 / bus 关闭退出
+
+**测试**：id +5、circuit +7（**369 测试**，含子测试，全绿）。
+
 ## [1.8.0] - 2026-06
 
 ### 移除 sqlx 依赖（做减法）+ 文档同步
@@ -232,6 +258,7 @@ v1.0 完整版上加 2 个能力，让 server 模式可上生产。
 
 - 分布式部署
 
+[1.9.0]: https://github.com/yiwanghehe/acorncode/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/yiwanghehe/acorncode/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/yiwanghehe/acorncode/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/yiwanghehe/acorncode/compare/v1.5.0...v1.6.0
