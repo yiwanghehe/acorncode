@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 //go:embed schemas/read.json
@@ -166,7 +167,8 @@ func (r *Read) readContent(ctx context.Context, path string, offset, limit, maxB
 			data = data[:len(data)-1]
 		}
 		if len(data) > maxBytes {
-			return string(data[:maxBytes]), true, nil
+			// UTF-8 安全截断，回退到字符边界（避免切碎中文/emoji）
+			return truncateUTF8(string(data), maxBytes), true, nil
 		}
 		return string(data), false, nil
 	}
@@ -219,8 +221,8 @@ func (r *Read) readContent(ctx context.Context, path string, offset, limit, maxB
 	result := sb.String()
 	truncated := false
 	if len(result) > maxBytes {
-		// 按字节截断（保持 UTF-8 完整需要更复杂处理，v1 简化）
-		result = result[:maxBytes]
+		// 按字节截断，但回退到最近的 UTF-8 字符边界，避免切碎多字节字符（如中文）
+		result = truncateUTF8(result, maxBytes)
 		truncated = true
 	}
 
@@ -238,4 +240,29 @@ func countLines(s string) int {
 		return 0
 	}
 	return strings.Count(s, "\n") + 1
+}
+
+// truncateUTF8 把 s 截断到不超过 maxBytes 字节，且回退到最近的
+// UTF-8 字符边界，保证不切碎多字节字符（如中文/emoji）。
+// 若 maxBytes 落在多字节字符中间，向前回退到该字符起始处之前。
+func truncateUTF8(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := s[:maxBytes]
+	// 若截断点正好是完整字符边界，直接返回
+	if utf8.ValidString(cut) {
+		return cut
+	}
+	// 否则从 maxBytes 向前回退，丢掉末尾不完整的字符
+	for i := maxBytes - 1; i >= 0; i-- {
+		if utf8.RuneStart(s[i]) {
+			// s[i] 是某个字符的首字节，截到 i（不含该不完整字符）
+			return s[:i]
+		}
+	}
+	return ""
 }

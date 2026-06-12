@@ -1,5 +1,5 @@
-// Package session - 类型定义（stub）
-// 真实实现: docs/acorncode-architect.md §6.4
+// Package session - 会话/消息/Part 的类型定义
+// 参考: docs/architecture.md §3.5 / §7
 package session
 
 import (

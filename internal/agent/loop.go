@@ -398,7 +398,7 @@ func (l *Loop) executeToolCalls(ctx context.Context, calls []ToolCall) error {
 func (l *Loop) compact(ctx context.Context) error {
 	slog.InfoContext(ctx, "compact 触发", "session_id", l.sessionID)
 	if l.compactor == nil {
-		return errors.New("compactor 尚未注入，留待后续")
+		return errors.New("compactor 未注入：无法压缩")
 	}
 
 	// 1. 取所有消息

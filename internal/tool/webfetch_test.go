@@ -3,12 +3,42 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 )
+
+// fakeResolver 测试用 DNS 解析：按 map 返回结果，未命中返错。
+// 把 example.com 映射到公网 IP，让现有测试不触真实 DNS、不依赖网络。
+type fakeResolver struct {
+	m map[string][]net.IPAddr
+}
+
+func (f *fakeResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	if addrs, ok := f.m[host]; ok {
+		return addrs, nil
+	}
+	return nil, errors.New("fakeResolver: no such host " + host)
+}
+
+// useFakeResolver 安装一个把 example.com → 公网 IP 的 fake 解析器，
+// 测试结束自动还原。其它域名可在 extra 里补充。
+func useFakeResolver(t *testing.T, extra map[string][]net.IPAddr) {
+	t.Helper()
+	m := map[string][]net.IPAddr{
+		"example.com": {{IP: net.ParseIP("93.184.216.34")}}, // example.com 真实公网 IP
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	old := resolver
+	resolver = &fakeResolver{m: m}
+	t.Cleanup(func() { resolver = old })
+}
 
 func newWebFetchArgs(t *testing.T, args WebFetchArgs) json.RawMessage {
 	t.Helper()
@@ -21,6 +51,7 @@ func newWebFetchArgs(t *testing.T, args WebFetchArgs) json.RawMessage {
 
 func runWebFetch(t *testing.T, w *WebFetch, args json.RawMessage) Result {
 	t.Helper()
+	useFakeResolver(t, nil)
 	res, err := w.Execute(context.Background(), args, Context{})
 	if err != nil {
 		t.Fatalf("Execute err: %v", err)
@@ -356,5 +387,64 @@ func TestWebFetch_BlockUnspecifiedIP(t *testing.T) {
 	res := runWebFetch(t, &WebFetch{}, newWebFetchArgs(t, WebFetchArgs{URL: "http://0.0.0.0/"}))
 	if res.Status != "error" {
 		t.Errorf("0.0.0.0 应 error: %s", res.Status)
+	}
+}
+
+// TestWebFetch_BlockInternalDomain 验证 v1.11 新能力：
+// 解析到私有 IP 的域名被拦截（堵住 v0.3 遗留的内网域名绕过）。
+func TestWebFetch_BlockInternalDomain(t *testing.T) {
+	// internal.corp 解析到 10.0.0.5（私有），应被拒
+	useFakeResolver(t, map[string][]net.IPAddr{
+		"internal.corp": {{IP: net.ParseIP("10.0.0.5")}},
+	})
+	res, err := (&WebFetch{}).Execute(context.Background(),
+		newWebFetchArgs(t, WebFetchArgs{URL: "http://internal.corp/secret"}), Context{})
+	if err != nil {
+		t.Fatalf("Execute err: %v", err)
+	}
+	if res.Status != "error" {
+		t.Errorf("内网域名应被拦截: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "受限地址") {
+		t.Errorf("Output 应说明解析到受限地址: %s", res.Output)
+	}
+}
+
+// TestWebFetch_BlockMixedResolve 验证多 IP 中任一为私有即拒绝（DNS rebinding 防护）
+func TestWebFetch_BlockMixedResolve(t *testing.T) {
+	useFakeResolver(t, map[string][]net.IPAddr{
+		"evil.com": {
+			{IP: net.ParseIP("8.8.8.8")},   // 公网
+			{IP: net.ParseIP("127.0.0.1")}, // 但也含回环
+		},
+	})
+	res, err := (&WebFetch{}).Execute(context.Background(),
+		newWebFetchArgs(t, WebFetchArgs{URL: "http://evil.com/"}), Context{})
+	if err != nil {
+		t.Fatalf("Execute err: %v", err)
+	}
+	if res.Status != "error" {
+		t.Errorf("含私有 IP 的多解析应被拦截: %s", res.Output)
+	}
+}
+
+// TestWebFetch_ResolveFail 验证域名解析失败时保守拒绝
+func TestWebFetch_ResolveFail(t *testing.T) {
+	useFakeResolver(t, nil) // 只认 example.com，其它解析失败
+	res, err := (&WebFetch{}).Execute(context.Background(),
+		newWebFetchArgs(t, WebFetchArgs{URL: "http://nonexistent.invalid/"}), Context{})
+	if err != nil {
+		t.Fatalf("Execute err: %v", err)
+	}
+	if res.Status != "error" {
+		t.Errorf("解析失败应拒绝: %s", res.Output)
+	}
+}
+
+// TestCheckSSRF_PublicDomainAllowed 验证解析到公网 IP 的域名放行
+func TestCheckSSRF_PublicDomainAllowed(t *testing.T) {
+	useFakeResolver(t, nil) // example.com → 公网
+	if err := checkSSRF(context.Background(), "example.com"); err != nil {
+		t.Errorf("公网域名不应被拦: %v", err)
 	}
 }

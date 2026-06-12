@@ -2,6 +2,35 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.11.0] - 2026-06
+
+### 整合：消除三处遗留技术债（SSRF / 工具裁剪 / UTF-8 截断）
+
+清掉自 v0.1~v0.3 起标注「简化/stub」却长期未补的三处真实技术债，**0 新依赖**，测试全绿。
+
+**A — `PickForTurn` 真实工具裁剪**（`tool/tool.go`，原为 stub 永远返回全部）：
+
+- 按相关性打分取 top-budget：关键词命中 +10、ID 字面命中 +8、最近调用按新近度
+  +5..+1、核心工具（read/bash）基础分 +2 兜底。
+- `LoopConfig.MaxTools` 预算从此真正生效；小模型场景下减少 prompt 膨胀与误选工具。
+- 确定性：同分按 ID 字典序稳定排序；budget<=0 或工具数≤budget 时返回全部（向后兼容）。
+
+**B — WebFetch SSRF 域名解析防护**（`tool/webfetch.go`，原仅挡字面 IP）：
+
+- `checkSSRF` 现在对域名做 **DNS 解析**，检查**所有**解析结果，任一为私有/回环/
+  链路本地 IP 即拒绝；解析失败保守拒绝。堵住 v0.3 遗留的「内网域名绕过」与部分
+  DNS rebinding。重定向也走同一检查（含解析）。DNS 派生 5s 超时子 ctx 防阻塞。
+- 测试用可注入的 `resolver` 变量，0 网络依赖。
+
+**C — Read 工具 UTF-8 安全截断**（`tool/read.go`，原按字节硬切会切碎中文/emoji）：
+
+- 新增 `truncateUTF8`：截断回退到最近的 UTF-8 字符边界，整文件与 offset/limit
+  两条读取路径均已接入，不再产生半个汉字乱码。
+
+**清理**：修正 `loop.go`/`schema.go`/`webfetch.go` 中过时的「留待后续/stub」注释与描述。
+
+**测试**：PickForTurn +7、SSRF +4、truncateUTF8 +6（**约 407 运行单元**，全绿）。
+
 ## [1.10.0] - 2026-06
 
 ### Compaction 持久化闭环 + 真实 tokenizer 估算
@@ -288,6 +317,7 @@ v1.0 完整版上加 2 个能力，让 server 模式可上生产。
 
 - 分布式部署
 
+[1.11.0]: https://github.com/yiwanghehe/acorncode/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/yiwanghehe/acorncode/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/yiwanghehe/acorncode/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/yiwanghehe/acorncode/compare/v1.7.0...v1.8.0

@@ -2,7 +2,7 @@
 
 > 必读。新加 tool、发现新坑、改动代码风格，**立即**更新本文件。
 >
-> 当前 **v1.10**：6 个内置 tool + MCP 外部工具 + 3 toolcall 策略（Grammar 含 GBNF + Ollama format + Anthropic tool_choice + `--force-tool` + HTTP 请求级 `force_tool`）+ HTTP 鉴权 + 多 session + **Compaction 持久化闭环** + **真实 tokenizer 估算** + **389 测试**（**3 第三方依赖**）。v1.9 完成代码结构重构（单一职责 R1–R8）。详见 [README.md](README.md) §已实现。
+> 当前 **v1.11**：6 个内置 tool + MCP 外部工具 + 3 toolcall 策略（Grammar 含 GBNF + Ollama format + Anthropic tool_choice + `--force-tool` + HTTP 请求级 `force_tool`）+ HTTP 鉴权 + 多 session + Compaction 持久化闭环 + 真实 tokenizer 估算 + **工具裁剪** + **SSRF 域名解析防护** + **UTF-8 安全截断** + **407 测试**（**3 第三方依赖**）。v1.9 完成代码结构重构（单一职责 R1–R8）。详见 [README.md](README.md) §已实现。
 
 ## 1. 硬规则
 
@@ -89,13 +89,16 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 | 20 | 压缩写回的 summary 是 `system` 角色，`toModelMessages` 只认 user/assistant 会丢摘要 | `toModelMessages` 增加 `system` 分支（v1.10） |
 | 21 | `ReplaceMessages` 半途失败留下半压缩状态 | SQLite 用事务（DELETE+INSERT 整体回滚）；Memory 持写锁（v1.10） |
 | 22 | `estimateTokens` 用 len/4 中文严重低估、且漏算工具 args/schema | 接入 `internal/tokenizer` 启发式 + 补算 ToolPart/JSONSchema（v1.10） |
+| 23 | WebFetch SSRF 只挡字面 IP，内网域名直接绕过 | `checkSSRF` 解析域名校验所有 IP，任一私有即拒；解析失败保守拒（v1.11） |
+| 24 | `read` 按字节硬截断切碎中文/emoji 成乱码 | `truncateUTF8` 回退到 UTF-8 字符边界，两条读取路径都接（v1.11） |
+| 25 | `PickForTurn` 是 stub 永远返回全部工具，MaxTools 形同虚设 | 按相关性打分取 top-budget，核心工具基础分兜底（v1.11） |
 
 ## 4. 跑命令
 
 ```bash
 make test              # 全部（~5 秒，389 测试）
 make test-llm          # LLM 客户端（10 + 11 anthropic = 21 测试）
-make test-tool         # 工具（22+12+16+17+18+19+2 = 106 测试）
+make test-tool         # 工具（read/edit/bash/grep/glob/webfetch + PickForTurn 裁剪 + UTF-8 截断）
 make test-agent        # Agent 集成（5 测试）
 make vet               # go vet
 make fmt-check         # gofmt 检查

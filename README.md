@@ -4,7 +4,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/)
-[![Tests 389](https://img.shields.io/badge/tests-389%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
+[![Tests 407](https://img.shields.io/badge/tests-407%20passing-brightgreen)](https://github.com/yiwanghehe/acorncode)
 
 AcornCode 是一个**纯 Go 原生**的 coding agent，类似 [opencode](https://github.com/sst/opencode) 但做了关键简化：
 
@@ -71,7 +71,7 @@ make ci                # fmt + vet + test
 make e2e               # 端到端（需本地 ollama）
 ```
 
-## 已实现（v1.10）
+## 已实现（v1.11）
 
 | 模块 | 文件 | 测试 |
 |------|------|------|
@@ -91,7 +91,7 @@ make e2e               # 端到端（需本地 ollama）
 | **bash** tool | `internal/tool/bash.go` | 16 |
 | **grep** tool | `internal/tool/grep.go` | 17 |
 | **glob** tool | `internal/tool/glob.go` | 18 |
-| **webfetch** tool | `internal/tool/webfetch.go` | 19 |
+| **webfetch** tool（v1.11 SSRF 域名解析防护） | `internal/tool/webfetch.go` | 23 |
 | **SQLiteStore** | `internal/session/sqlitestore.go` | 19 |
 | Bus（6 事件，5 消费） | `internal/bus/event.go` | - |
 | AGENTS.md Loader | `internal/instruction/loader.go` | - |
@@ -104,12 +104,14 @@ make e2e               # 端到端（需本地 ollama）
 | **ReplaceMessages**（v1.10，Compaction 原子写回） | `internal/session/*store.go` | +4 |
 | **tokenizer**（v1.10，启发式估算，纯 stdlib） | `internal/tokenizer/tokenizer.go` | 11 |
 | **compact 持久化闭环**（v1.10） | `internal/agent/loop.go` | +4 |
+| **工具裁剪 PickForTurn**（v1.11，按相关性打分） | `internal/tool/tool.go` | 7 |
+| **UTF-8 安全截断**（v1.11，read 不切碎中文） | `internal/tool/read.go` | 6 |
 
-**总计**：**389 测试**，< 5 秒。**3 第三方依赖**（v1.8 移除 sqlx；MCP / GBNF / tokenizer 均 0 新依赖，纯 stdlib）。
+**总计**：**407 测试**，< 5 秒。**3 第三方依赖**（v1.8 移除 sqlx；MCP / GBNF / tokenizer / 工具裁剪 / SSRF 均 0 新依赖，纯 stdlib）。
 
 ## 当前状态
 
-**v1.10 完整版** — 6 个 tool + MCP 外部工具 + TUI + SQLite + 多 provider + 三 toolcall 策略（含 GBNF 约束 + 强制工具调用）+ HTTP API（鉴权 + 多 session + 请求级 `force_tool`）+ Permission 弹窗 + **Compaction 持久化闭环** + **真实 tokenizer 估算**。**3 第三方依赖**。v1.9 完成代码结构重构（单一职责，R1–R8）；v1.10 补齐 Compaction 写回与 tokenizer 两个 P0 缺口。
+**v1.11 完整版** — 6 个 tool + MCP 外部工具 + TUI + SQLite + 多 provider + 三 toolcall 策略（含 GBNF 约束 + 强制工具调用）+ HTTP API（鉴权 + 多 session + 请求级 `force_tool`）+ Permission 弹窗 + Compaction 持久化闭环 + 真实 tokenizer 估算 + **按相关性的工具裁剪** + **SSRF 域名解析防护** + **UTF-8 安全截断**。**3 第三方依赖**。v1.11 清掉 v0.1~v0.3 遗留的三处技术债（PickForTurn stub / SSRF 仅挡字面 IP / read 按字节硬切）。
 
 ### CLI 完整
 
@@ -211,7 +213,7 @@ AcornCode 可启动外部 **MCP（Model Context Protocol）server** 子进程，
 
 - TUI 模式必须从 TTY 跑（CI 用 server 模式）
 - HTTP server 模式 Permission ask 默认 allow（headless 无 TUI）
-- WebFetch 默认禁私有 IP（含 AWS metadata 169.254/16）
+- WebFetch 默认禁私有 IP（含 AWS metadata 169.254/16）；v1.11 起域名也解析后校验，解析到私有 IP 即拒绝
 - **Bash 工具跨平台**（v1.1.3）：Unix 用 `sh -c`；Windows 有 POSIX shell（Git Bash/WSL）则用 `sh -c`，否则回退 `cmd /c`。纯 Windows 环境下需用 cmd 语义命令
 - Bash 的 timeout/cancel 测试在 Windows 跳过（子进程取消信号不可靠）
 

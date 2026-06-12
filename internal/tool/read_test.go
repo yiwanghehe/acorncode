@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // =============================================================================
@@ -382,5 +383,78 @@ func TestRead_ContextCancelled(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "取消") {
 		t.Errorf("Output = %q", res.Output)
+	}
+}
+
+// ========== truncateUTF8（v1.11 UTF-8 安全截断）==========
+
+func TestTruncateUTF8_ASCII(t *testing.T) {
+	if got := truncateUTF8("hello", 3); got != "hel" {
+		t.Errorf("got %q, 期望 hel", got)
+	}
+}
+
+func TestTruncateUTF8_NoTruncateNeeded(t *testing.T) {
+	if got := truncateUTF8("hi", 10); got != "hi" {
+		t.Errorf("got %q, 期望 hi（无需截断）", got)
+	}
+}
+
+func TestTruncateUTF8_Zero(t *testing.T) {
+	if got := truncateUTF8("hello", 0); got != "" {
+		t.Errorf("got %q, 期望空串", got)
+	}
+}
+
+// TestTruncateUTF8_ChineseBoundary 核心用例：中文每字 3 字节，
+// 在字符中间截断时必须回退到完整字符边界，不能产生半个汉字。
+func TestTruncateUTF8_ChineseBoundary(t *testing.T) {
+	s := "你好世界" // 每字 3 字节，共 12 字节
+	// maxBytes=7 落在第 3 个字「世」中间（6 字节是「你好」边界，7 在「世」内）
+	got := truncateUTF8(s, 7)
+	if !utf8.ValidString(got) {
+		t.Errorf("截断结果非合法 UTF-8: %q", got)
+	}
+	if got != "你好" {
+		t.Errorf("got %q, 期望「你好」（回退到字符边界）", got)
+	}
+}
+
+// TestTruncateUTF8_ExactBoundary maxBytes 正好落在字符边界
+func TestTruncateUTF8_ExactBoundary(t *testing.T) {
+	s := "你好世界"
+	got := truncateUTF8(s, 6) // 正好「你好」2 字 6 字节
+	if got != "你好" {
+		t.Errorf("got %q, 期望「你好」", got)
+	}
+}
+
+// TestTruncateUTF8_Emoji emoji 4 字节，截断中间应回退
+func TestTruncateUTF8_Emoji(t *testing.T) {
+	s := "a😀b"                // a(1) + 😀(4) + b(1) = 6 字节
+	got := truncateUTF8(s, 3) // 落在 😀 中间
+	if !utf8.ValidString(got) {
+		t.Errorf("非合法 UTF-8: %q", got)
+	}
+	if got != "a" {
+		t.Errorf("got %q, 期望 a（回退掉半个 emoji）", got)
+	}
+}
+
+// TestRead_TruncatedChinese 端到端：截断中文文件不产生乱码
+func TestRead_TruncatedChinese(t *testing.T) {
+	r, dir := newTestRead(t, 10)       // 10 字节预算
+	content := strings.Repeat("中", 20) // 60 字节
+	path := writeFile(t, dir, "cn.txt", content)
+
+	res := runExecute(t, r, Context{Cwd: dir}, ReadArgs{Path: path})
+	if res.Status != "success" {
+		t.Fatalf("Status = %q", res.Status)
+	}
+	if !res.IsTruncated {
+		t.Error("应被截断")
+	}
+	if !utf8.ValidString(res.Output) {
+		t.Errorf("截断输出含半个汉字（非法 UTF-8）: %q", res.Output)
 	}
 }

@@ -205,9 +205,17 @@ SQLite 用事务（DELETE 旧 + INSERT 新，整体回滚）替换。后续 turn
 | bash | `internal/tool/bash.go` | 16 | 30s timeout + 截断 + 非零仍 success |
 | grep | `internal/tool/grep.go` | 17 | path/pattern/include/ignore_case + 跳重目录 |
 | glob | `internal/tool/glob.go` | 18 | 自实现 `*` `**` `?` `[abc]`（0 依赖） |
-| webfetch | `internal/tool/webfetch.go` | 19 | HTTP + 30s + 1MB + **SSRF 禁私有 IP** |
+| webfetch | `internal/tool/webfetch.go` | 23 | HTTP + 30s + 1MB + **SSRF 禁私有 IP + 域名解析校验**（v1.11） |
 
 所有 tool 第一步 normalize 路径：`tc.Cwd` base + `filepath.Clean`。
+
+**工具裁剪**（v1.11）：`Registry.PickForTurn(agent, budget, userMsg, recent)` 按相关性打分
+取 top-budget 暴露给模型——关键词命中 +10 / ID 字面 +8 / 最近调用 +5..+1 / 核心工具
+（read/bash）基础分 +2 兜底；budget<=0 或工具数≤budget 时返回全部。让 `MaxTools` 真正生效，
+减少小模型 prompt 膨胀。
+
+**Read UTF-8 安全截断**（v1.11）：超 `maxBytes` 时 `truncateUTF8` 回退到最近字符边界，
+不切碎中文/emoji。整文件与 offset/limit 两条路径均接入。
 
 ## 5.5 MCP 外部工具（v1.2）
 

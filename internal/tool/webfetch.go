@@ -37,7 +37,7 @@ type WebFetch struct {
 func (w *WebFetch) Definition() Definition {
 	return Definition{
 		ID:          "webfetch",
-		Description: "Fetch content from a URL via HTTP/HTTPS. Returns status code, response headers, and body (truncated to max_size). Blocks private/loopback IPs by default (SSRF prevention). Use to read documentation, fetch latest releases, check upstream issues.",
+		Description: "Fetch content from a URL via HTTP/HTTPS. Returns status code, response headers, and body (truncated to max_size). Blocks private/loopback IPs and domains that resolve to them (SSRF prevention, incl. DNS resolution check). Use to read documentation, fetch latest releases, check upstream issues.",
 		Keywords:    []string{"webfetch", "http", "fetch", "download", "url", "curl", "网络", "抓取", "下载"},
 		JSONSchema:  webfetchSchema,
 	}
@@ -68,7 +68,7 @@ func (w *WebFetch) Execute(ctx context.Context, args json.RawMessage, tc Context
 	if host == "" {
 		return Result{Status: "error", Title: "webfetch", Output: "URL 缺 host"}, nil
 	}
-	if err := checkSSRF(host); err != nil {
+	if err := checkSSRF(ctx, host); err != nil {
 		return Result{Status: "error", Title: "webfetch", Output: err.Error()}, nil
 	}
 
@@ -124,8 +124,8 @@ func (w *WebFetch) Execute(ctx context.Context, args json.RawMessage, tc Context
 				if len(via) >= 5 {
 					return fmt.Errorf("stopped after 5 redirects")
 				}
-				// 重定向也走 SSRF 检查
-				return checkSSRF(req.URL.Hostname())
+				// 重定向也走 SSRF 检查（含域名解析）
+				return checkSSRF(req.Context(), req.URL.Hostname())
 			},
 		}
 	}
@@ -188,22 +188,52 @@ func (w *WebFetch) Execute(ctx context.Context, args json.RawMessage, tc Context
 	}, nil
 }
 
-// checkSSRF 检查 host 是否为私有 / 回环 IP
-func checkSSRF(host string) error {
+// resolver 供测试注入自定义 DNS 解析（默认用系统解析器）
+var resolver interface {
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+} = net.DefaultResolver
+
+// checkSSRF 检查 host 是否指向私有 / 回环 / 链路本地 IP。
+//
+// 安全模型（v1.11 强化）：
+//   - host 是字面 IP：直接判定。
+//   - host 是域名：解析 DNS，**所有**解析出的 IP 都必须是公网，
+//     任一为私有/回环/链路本地即拒绝。这堵住了 v0.3 遗留的「内网域名绕过」
+//     与部分 DNS rebinding（请求前再校验一次解析结果）。
+//   - 解析失败：保守拒绝（宁可错杀，避免把不可控目标放进来）。
+//
+// DNS 解析派生 5s 超时子 ctx，避免恶意/不可达域名长时间阻塞。
+func checkSSRF(ctx context.Context, host string) error {
 	// localhost 字符串
 	if strings.EqualFold(host, "localhost") {
 		return fmt.Errorf("拒绝访问 localhost")
 	}
 
-	// 解析 IP
-	ip := net.ParseIP(host)
-	if ip == nil {
-		// 不是 IP，可能是域名：解析后检查（但会触发 DNS 解析 → v0.3 简化：跳过）
-		// 安全模型：要求用户用 IP 访问内网（不常见）；或者禁用私有 IP 后让用户显式 allow
-		// v0.3 简化：只检查字面 IP，域名不解析（防止额外 DNS 依赖）
-		return nil
+	// 字面 IP：直接判定
+	if ip := net.ParseIP(host); ip != nil {
+		return checkIPBlocked(ip)
 	}
 
+	// 域名：解析后逐一校验
+	dnsCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	addrs, err := resolver.LookupIPAddr(dnsCtx, host)
+	if err != nil {
+		return fmt.Errorf("拒绝访问：域名解析失败 %s: %v", host, err)
+	}
+	if len(addrs) == 0 {
+		return fmt.Errorf("拒绝访问：域名 %s 无解析结果", host)
+	}
+	for _, a := range addrs {
+		if err := checkIPBlocked(a.IP); err != nil {
+			return fmt.Errorf("拒绝访问：域名 %s 解析到受限地址 %s", host, a.IP)
+		}
+	}
+	return nil
+}
+
+// checkIPBlocked 判断单个 IP 是否落在受限网段（私有/回环/链路本地/未指定）
+func checkIPBlocked(ip net.IP) error {
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return fmt.Errorf("拒绝访问私有/回环 IP: %s", ip)
 	}
