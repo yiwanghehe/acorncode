@@ -180,9 +180,12 @@ func (l *Loop) Run(ctx context.Context, userMsg *session.UserMessage) error {
 			return l.handleError(ctx, err)
 		}
 
-		// 3. 退出条件
+		// 3. 退出条件：本轮正常完成（模型 stop 且无待执行工具）。
+		//    Loop 被 TUI/server 复用跑多轮，完成后必须归位到 Idle 以接受下一条
+		//    用户消息——否则下一轮 Run() 的 guard(StateIdle) 会失败报
+		//    「期望状态 Idle, 当前 Stopped」。Stopped 仅留给真正的终止（ctx 取消 / fatal）。
 		if finish != nil && finish.Reason == "stop" && len(calls) == 0 {
-			l.setState(ctx, StateStopped)
+			l.setState(ctx, StateIdle)
 			return nil
 		}
 
@@ -199,10 +202,10 @@ func (l *Loop) Run(ctx context.Context, userMsg *session.UserMessage) error {
 			}
 		}
 
-		// 5. 检查 turn 上限
+		// 5. 检查 turn 上限：达到上限也是本轮正常收尾，归位到 Idle 供下一轮复用。
 		l.turn++
 		if l.cfg.MaxTurns > 0 && l.turn >= l.cfg.MaxTurns {
-			l.setState(ctx, StateStopped)
+			l.setState(ctx, StateIdle)
 			return nil
 		}
 
@@ -515,10 +518,12 @@ func (l *Loop) publishStateChange(ctx context.Context, from, to LoopState) {
 	})
 }
 
-// handleError 处理可恢复错误（errTurnAborted 走重试路径，其他走 fatal）
+// handleError 处理可恢复错误（errTurnAborted 结束本轮但不算 fatal，其他走 fatal）。
+// errTurnAborted 时本轮收尾，状态归位 Idle 供下一轮复用（不能停在中间态，
+// 否则下一轮 Run() 的 guard(StateIdle) 失败）。
 func (l *Loop) handleError(ctx context.Context, err error) error {
 	if errors.Is(err, errTurnAborted) {
-		l.setState(ctx, StateBuildingRequest)
+		l.setState(ctx, StateIdle)
 		return nil
 	}
 	return l.fatal(ctx, err)

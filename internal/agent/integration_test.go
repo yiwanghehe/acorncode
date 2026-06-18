@@ -490,3 +490,40 @@ func TestIntegration_LoopCallsBashTool(t *testing.T) {
 		t.Errorf("bash 输出应含 EXIT 0: %q", bashResult)
 	}
 }
+
+// TestIntegration_MultiTurnReuse 回归：同一个 Loop 被复用跑多轮对话（TUI/server 场景）。
+// 旧实现一轮正常结束后状态停在 StateStopped，第二轮 Run() 的 guard(StateIdle) 会报
+// 「fatal 错误: 期望状态 Idle, 当前 Stopped」。修复后每轮正常完成归位到 Idle。
+func TestIntegration_MultiTurnReuse(t *testing.T) {
+	mock := newMockOllamaScripted(t,
+		`{"model":"x","message":{"role":"assistant","content":"第一轮回复"},"done":true,"done_reason":"stop","eval_count":2,"prompt_eval_count":5}`,
+		`{"model":"x","message":{"role":"assistant","content":"第二轮回复"},"done":true,"done_reason":"stop","eval_count":2,"prompt_eval_count":5}`,
+	)
+
+	dir := t.TempDir()
+	loop, eventBus, _ := setupEnv(t, mock, dir)
+	defer eventBus.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// 第一轮
+	if err := loop.Run(ctx, &session.UserMessage{Text: "你好"}); err != nil {
+		t.Fatalf("第一轮 Run 失败: %v", err)
+	}
+	if loop.CurrentState() != StateIdle {
+		t.Fatalf("第一轮结束后状态 = %s, 期望 Idle", loop.CurrentState())
+	}
+
+	// 第二轮（复用同一个 Loop）——旧实现这里会 fatal
+	if err := loop.Run(ctx, &session.UserMessage{Text: "再问一句"}); err != nil {
+		t.Fatalf("第二轮 Run 失败（多轮复用回归）: %v", err)
+	}
+	if loop.CurrentState() != StateIdle {
+		t.Fatalf("第二轮结束后状态 = %s, 期望 Idle", loop.CurrentState())
+	}
+
+	if mock.gotCalls() != 2 {
+		t.Errorf("Ollama 应被调 2 次, 实际 %d", mock.gotCalls())
+	}
+}
