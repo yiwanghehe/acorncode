@@ -91,6 +91,37 @@ func TestUpdate_Backspace(t *testing.T) {
 	}
 }
 
+// TestUpdate_CJKInput 验证中文（多字节字符）能正常输入。
+// 回归：旧实现用 len(msg.String())==1 按字节判断，中文一个字符占 3 字节
+// 被直接丢弃，导致 TUI 无法输入中文。
+func TestUpdate_CJKInput(t *testing.T) {
+	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
+	m.inputOn = true
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'你'}})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'好'}})
+	// 输入法一次可能给多个 rune
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("世界")})
+	if m.input != "你好世界" {
+		t.Errorf("input = %q, 期望 你好世界", m.input)
+	}
+}
+
+// TestUpdate_BackspaceCJK 验证退格删除中文按 rune 边界，不切碎成乱码。
+// 回归：旧实现 m.input[:len(m.input)-1] 按字节切，删中文留下半个多字节字符。
+func TestUpdate_BackspaceCJK(t *testing.T) {
+	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
+	m.input = "你好"
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.input != "你" {
+		t.Errorf("input = %q, 期望 你（应整字删除，不留乱码字节）", m.input)
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.input != "" {
+		t.Errorf("input = %q, 期望空", m.input)
+	}
+}
+
 func TestUpdate_EmptyEnter(t *testing.T) {
 	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
 	m.input = "   "
@@ -106,15 +137,13 @@ func TestUpdate_HelpCommand(t *testing.T) {
 	m.input = "/help"
 
 	// 直接调 helper 模拟（完整 Init 需 tea runtime）
-	m.text.Reset()
+	m.history.Reset()
 	_ = m.input
-	// 完整测试需要 loop 返回 nil，简化：直接调 View 验证 /help
+	// 完整测试需要 loop 返回 nil，简化：直接验证 appendHistory 写入历史
 	m.input = ""
-	// 用更小的范围：验证 View 包含 "Commands:"
-	m.text.Reset()
-	m.text.WriteString("Commands:\n")
-	if !strings.Contains(m.text.String(), "Commands:") {
-		t.Errorf("/help text 应含 'Commands:'")
+	m.appendHistory("Commands:\n")
+	if !strings.Contains(m.history.String(), "Commands:") {
+		t.Errorf("/help 历史应含 'Commands:'")
 	}
 }
 
@@ -143,28 +172,101 @@ func TestUpdate_EscQuits(t *testing.T) {
 
 func TestUpdate_BusEvent_TextDelta(t *testing.T) {
 	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
-	m.text.Reset()
+	m.stream.Reset()
 
-	// 模拟 part.delta 事件
+	// 真实 processor 行为：同一个 part（同 ID），每次 delta 携带【全量累积文本】。
+	// 第一次 "hello "，第二次 "hello world"。TUI 应整体替换，最终显示全量。
 	ev := bus.Event{
 		Type:      bus.EventPartDelta,
 		SessionID: "s1",
-		Data:      &session.TextPart{Text: "hello "},
+		Data:      &session.TextPart{ID: "prt_1", Text: "hello "},
 	}
 	m.handleBusEvent(ev)
 
 	ev2 := bus.Event{
 		Type:      bus.EventPartDelta,
 		SessionID: "s1",
-		Data:      &session.TextPart{Text: "world"},
+		Data:      &session.TextPart{ID: "prt_1", Text: "hello world"},
 	}
 	m.handleBusEvent(ev2)
 
-	if m.text.String() != "hello world" {
-		t.Errorf("text = %q, 期望 'hello world'", m.text.String())
+	if m.stream.String() != "hello world" {
+		t.Errorf("stream = %q, 期望 'hello world'", m.stream.String())
 	}
 	if m.status != "Streaming" {
 		t.Errorf("status = %q, 期望 Streaming", m.status)
+	}
+}
+
+// TestUpdate_BusEvent_TextDelta_NoStacking 回归：part.delta 携带全量文本，
+// TUI 必须整体替换而非追加。旧实现 WriteString 追加会把全量文本反复叠加，
+// 产生 "我是我是 Ac我是 AcornCode..." 式的文本雪球。
+func TestUpdate_BusEvent_TextDelta_NoStacking(t *testing.T) {
+	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
+	m.stream.Reset()
+
+	// 模拟流式：同一 part 逐步累积 "我" → "我是" → "我是 AcornCode"
+	steps := []string{"我", "我是", "我是 AcornCode"}
+	for _, full := range steps {
+		m.handleBusEvent(bus.Event{
+			Type:      bus.EventPartDelta,
+			SessionID: "s1",
+			Data:      &session.TextPart{ID: "prt_x", Text: full},
+		})
+	}
+	if got := m.stream.String(); got != "我是 AcornCode" {
+		t.Errorf("stream = %q, 期望 '我是 AcornCode'（不应堆叠）", got)
+	}
+}
+
+// TestUpdate_BusEvent_TextDelta_NewPartResets 验证新的文本 part（不同 ID）
+// 会清掉上一段流式内容，从头显示。
+func TestUpdate_BusEvent_TextDelta_NewPartResets(t *testing.T) {
+	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
+
+	m.handleBusEvent(bus.Event{
+		Type: bus.EventPartDelta, SessionID: "s1",
+		Data: &session.TextPart{ID: "prt_a", Text: "first answer"},
+	})
+	m.handleBusEvent(bus.Event{
+		Type: bus.EventPartDelta, SessionID: "s1",
+		Data: &session.TextPart{ID: "prt_b", Text: "second"},
+	})
+	if got := m.stream.String(); got != "second" {
+		t.Errorf("stream = %q, 期望 'second'（新 part 应重置）", got)
+	}
+}
+
+// TestConversationHistoryAccumulates 验证多轮对话历史累积不覆盖（v1.12 滚动式）。
+// 回归：旧实现每轮 Reset 正文，只显示最新一轮，无法回看历史。
+func TestConversationHistoryAccumulates(t *testing.T) {
+	m := NewModel(Config{SessionID: "s1", ModelName: "m", Bus: bus.New(), Ctx: context.Background()})
+
+	// 第一轮：用户提问入历史 + 流式回复 + 定格
+	m.appendHistory("> 第一个问题\n")
+	m.handleBusEvent(bus.Event{
+		Type: bus.EventPartDelta, SessionID: "s1",
+		Data: &session.TextPart{ID: "p1", Text: "第一个回答"},
+	})
+	m.flushStreamToHistory()
+
+	// 第二轮
+	m.appendHistory("> 第二个问题\n")
+	m.handleBusEvent(bus.Event{
+		Type: bus.EventPartDelta, SessionID: "s1",
+		Data: &session.TextPart{ID: "p2", Text: "第二个回答"},
+	})
+	m.flushStreamToHistory()
+
+	body := m.bodyContent()
+	for _, want := range []string{"第一个问题", "第一个回答", "第二个问题", "第二个回答"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("正文应保留历史 %q，实际:\n%s", want, body)
+		}
+	}
+	// 流式缓冲在定格后应清空
+	if m.stream.Len() != 0 {
+		t.Errorf("定格后 stream 应为空, 实际 %q", m.stream.String())
 	}
 }
 

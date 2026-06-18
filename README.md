@@ -10,7 +10,7 @@ AcornCode 是一个**纯 Go 原生**的 coding agent，类似 [opencode](https:/
 
 | 维度 | opencode | **AcornCode** |
 |------|----------|---------------|
-| 运行时 | Node.js + Deno | **单二进制，3 依赖** |
+| 运行时 | Node.js + Deno | **单二进制，4 依赖** |
 | LLM | Anthropic/GPT | **本地小模型优先**（7B 跑得动） |
 | 工具调用 | 仅 Native | **Native + Prompted + Grammar** |
 | 持久化 | Drizzle + SQLite | SQLite（modernc，纯 Go） |
@@ -221,7 +221,7 @@ AcornCode 可启动外部 **MCP（Model Context Protocol）server** 子进程，
 
 完整理由见 [docs/architecture.md](docs/architecture.md)。核心五点：
 
-1. **Go 原生 + 3 依赖**（v1.8 移除 sqlx）：单二进制 ~10MB；模型学 1 个 stdlib + 3 API
+1. **Go 原生 + 4 依赖**（v1.8 移除 sqlx；v1.12 加 bubbles 做 TUI 滚动）：单二进制 ~10MB；模型学 1 个 stdlib + 4 API
 2. **ToolCall 三策略**（v1.0 Native + Prompted + Grammar）：覆盖有/无原生 tool_call 的模型
 3. **Compaction 自动化**：长 session 自动摘要（v1.0.3）
 4. **HTTP API + 鉴权 + 多 session**（v1.1）：可上生产

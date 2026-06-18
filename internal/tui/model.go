@@ -1,10 +1,14 @@
 // Package tui - Bubble Tea 终端 UI
 //
-// v0.4 起替代 stdout REPL。订阅 Bus 的 4 类事件：
-//   - part.delta      → 累积文本到中部正文
+// v0.4 起替代 stdout REPL。订阅 Bus 的 5 类事件：
+//   - part.delta      → 当前流式回复文本
 //   - part.updated    → 工具开始/完成（状态栏显示 → tool_name）
 //   - agent.state.change → Loop 状态切换
 //   - error           → 错误显示
+//   - permission.asked → 权限弹窗
+//
+// v1.12：正文区改用 bubbles/viewport 做可滚动视口——对话历史累积不再被覆盖，
+// 支持 PgUp/PgDn/↑↓/鼠标滚轮滚动，新内容自动跟随到底部。
 package tui
 
 import (
@@ -12,6 +16,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -39,10 +44,23 @@ type Model struct {
 	subs subscribes
 
 	// UI 状态
-	width    int
-	height   int
-	status   string
-	text     strings.Builder
+	width  int
+	height int
+	status string
+
+	// 对话内容（v1.12 滚动式）
+	//   - history:  已定格的对话记录（历次问答），追加式累积，不再被覆盖
+	//   - stream:   当前正在流式输出的助手文本（part.delta 整体替换）
+	//   - viewport: 可滚动视口，正文 = history + stream
+	history  strings.Builder
+	stream   strings.Builder
+	viewport viewport.Model
+	vpReady  bool
+	// streamPartID 记录当前正在流式渲染的文本 part ID。
+	// EventPartDelta 携带的是该 part 的【全量累积文本】（processor 端 currentText.Text += delta），
+	// 因此 TUI 必须按 part「整体替换」而非追加，否则会出现 1+2+...+N 的文本雪球堆叠。
+	streamPartID string
+
 	input    string
 	inputOn  bool
 	quitting bool
@@ -125,6 +143,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// 正文视口高度 = 总高 - 状态栏(1) - 上分隔(1) - 下分隔(1) - 输入行(1) = -4
+		vpHeight := msg.Height - 4
+		if vpHeight < 1 {
+			vpHeight = 1
+		}
+		if !m.vpReady {
+			m.viewport = viewport.New(msg.Width, vpHeight)
+			m.vpReady = true
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = vpHeight
+		}
+		m.refreshViewport()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -141,7 +172,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
+		// 滚动键：转发给 viewport（无论 inputOn 与否都允许翻看历史）
+		switch msg.String() {
+		case "pgup", "pgdown", "ctrl+u", "ctrl+d", "home", "end":
+			return m, m.forwardToViewport(msg)
+		}
 		if !m.inputOn {
+			// 忙碌时方向键也用于滚动历史
+			if msg.String() == "up" || msg.String() == "down" {
+				return m, m.forwardToViewport(msg)
+			}
 			return m, nil
 		}
 		switch msg.String() {
@@ -159,7 +199,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			if text == "/clear" {
-				m.text.Reset()
+				m.history.Reset()
+				m.stream.Reset()
+				m.streamPartID = ""
+				m.refreshViewport()
 				m.setStatus("Idle")
 				return m, nil
 			}
@@ -168,30 +211,39 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if text == "/help" {
-				m.text.Reset()
-				m.text.WriteString("Commands:\n")
-				m.text.WriteString("  /exit  /quit  退出\n")
-				m.text.WriteString("  /clear        清屏\n")
-				m.text.WriteString("  /session      显示 session ID\n")
-				m.text.WriteString("  /help         本帮助\n")
+				m.appendHistory("Commands:\n" +
+					"  /exit  /quit  退出\n" +
+					"  /clear        清屏\n" +
+					"  /session      显示 session ID\n" +
+					"  /help         本帮助\n")
 				return m, nil
 			}
-			// 发到 loop
+			// 把用户提问定格进对话历史，再发到 loop
+			m.appendHistory(m.inputStyle.Render("> "+text) + "\n")
 			m.inputOn = false
 			m.setStatus("Building")
-			m.text.Reset()
 			return m, m.runLoop(text)
 		case "backspace":
+			// 按 rune 删除最后一个字符（中文 1 字符占多字节，不能按字节切，
+			// 否则会把多字节字符切碎成乱码）。
 			if len(m.input) > 0 {
-				m.input = m.input[:len(m.input)-1]
+				rs := []rune(m.input)
+				m.input = string(rs[:len(rs)-1])
 			}
 			return m, nil
 		default:
-			if len(msg.String()) == 1 {
-				m.input += msg.String()
+			// 文本输入（含中文等多字节字符）走 KeyRunes/KeySpace。
+			// 旧实现用 len(msg.String())==1 按【字节】判断，中文一个字符占 3 字节
+			// 永远不等于 1 而被丢弃，导致无法输入中文。改为按 Runes 追加。
+			if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+				m.input += string(msg.Runes)
 			}
 			return m, nil
 		}
+
+	case tea.MouseMsg:
+		// 鼠标滚轮滚动正文
+		return m, m.forwardToViewport(msg)
 
 	case busEventMsg:
 		ev := bus.Event(msg)
@@ -206,6 +258,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case loopDoneMsg:
+		// 一轮结束：把当前流式回复定格进历史，清空流式缓冲。
+		m.flushStreamToHistory()
 		if msg.Err != nil {
 			m.setStatus(fmt.Sprintf("Error: %v", msg.Err))
 		} else {
@@ -238,16 +292,13 @@ func (m *Model) View() string {
 	sb.WriteString(divider)
 	sb.WriteString("\n")
 
-	// 文本区
-	body := m.text.String()
-	if body == "" {
-		if m.inputOn {
-			body = "(waiting for input...)"
-		} else {
-			body = "(thinking...)"
-		}
+	// 文本区（可滚动视口）
+	if m.vpReady {
+		sb.WriteString(m.viewport.View())
+	} else {
+		// 尚未收到 WindowSizeMsg：退化为直接渲染正文
+		sb.WriteString(m.textStyle.Render(m.bodyContent()))
 	}
-	sb.WriteString(m.textStyle.Render(body))
 	sb.WriteString("\n")
 	sb.WriteString(divider)
 	sb.WriteString("\n")
@@ -256,11 +307,64 @@ func (m *Model) View() string {
 	if m.inputOn {
 		sb.WriteString(m.inputStyle.Render("> " + m.input))
 	} else {
-		sb.WriteString(m.statusStyle.Render("(busy, press Ctrl+C to abort)"))
+		sb.WriteString(m.statusStyle.Render("(busy · ↑↓/PgUp/PgDn 滚动历史, Ctrl+C 中止)"))
 	}
-	sb.WriteString("\n")
 
 	return sb.String()
+}
+
+// bodyContent 返回正文完整内容（对话历史 + 当前流式回复）。
+func (m *Model) bodyContent() string {
+	body := m.history.String() + m.stream.String()
+	if body == "" {
+		if m.inputOn {
+			return "(waiting for input...)"
+		}
+		return "(thinking...)"
+	}
+	return body
+}
+
+// refreshViewport 把最新正文写进 viewport 并跟随到底部（若用户未手动上滚）。
+func (m *Model) refreshViewport() {
+	if !m.vpReady {
+		return
+	}
+	atBottom := m.viewport.AtBottom()
+	m.viewport.SetContent(m.bodyContent())
+	// 新内容到达时，仅当用户原本就在底部才自动跟随，避免打断手动翻看历史。
+	if atBottom {
+		m.viewport.GotoBottom()
+	}
+}
+
+// appendHistory 把一段文本定格进对话历史并刷新视口。
+func (m *Model) appendHistory(s string) {
+	m.history.WriteString(s)
+	m.refreshViewport()
+}
+
+// flushStreamToHistory 把当前流式回复定格进历史，清空流式缓冲。
+func (m *Model) flushStreamToHistory() {
+	if m.stream.Len() > 0 {
+		m.history.WriteString(m.stream.String())
+		if !strings.HasSuffix(m.stream.String(), "\n") {
+			m.history.WriteString("\n")
+		}
+	}
+	m.stream.Reset()
+	m.streamPartID = ""
+	m.refreshViewport()
+}
+
+// forwardToViewport 把滚动类消息转发给 viewport 并返回其 cmd。
+func (m *Model) forwardToViewport(msg tea.Msg) tea.Cmd {
+	if !m.vpReady {
+		return nil
+	}
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
+	return cmd
 }
 
 // renderPermissionDialog 渲染权限弹窗
@@ -343,11 +447,21 @@ func (m *Model) runLoop(userText string) tea.Cmd {
 func (m *Model) handleBusEvent(ev bus.Event) {
 	switch ev.Type {
 	case bus.EventPartDelta:
+		// EventPartDelta 的 Data 携带【全量累积文本】（非增量），因此用全量
+		// 文本整体替换当前流式段，而不是追加——追加会导致文本雪球堆叠。
+		var partID, fullText string
 		if tp, ok := ev.Data.(*session.TextPart); ok {
-			m.text.WriteString(tp.Text)
+			partID, fullText = tp.ID, tp.Text
 		} else if tp, ok := ev.Data.(session.TextPart); ok {
-			m.text.WriteString(tp.Text)
+			partID, fullText = tp.ID, tp.Text
+		} else {
+			break
 		}
+		// 同一 part 的后续 delta 用全量文本整体替换当前流式段。
+		m.stream.Reset()
+		m.streamPartID = partID
+		m.stream.WriteString(fullText)
+		m.refreshViewport()
 		m.setStatus("Streaming")
 
 	case bus.EventPartUpdated:

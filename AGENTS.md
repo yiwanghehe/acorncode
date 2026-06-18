@@ -24,6 +24,7 @@
 - **不要在 tool 里调 LLM**（死循环）
 - tool **不要 import** 任何 LLM/provider 包
 - v1.8 实际依赖（3 个）：bubbletea / lipgloss / modernc-sqlite（session 用标准库 `database/sql`）
+- v1.12：加 bubbles（与 bubbletea 同源，TUI viewport 滚动），共 4 个第三方依赖
 - 加新依赖前先想"用 stdlib 能不能做"
 
 ### 1.5 结构约定（v1.9 重构后）
@@ -92,6 +93,10 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 | 23 | WebFetch SSRF 只挡字面 IP，内网域名直接绕过 | `checkSSRF` 解析域名校验所有 IP，任一私有即拒；解析失败保守拒（v1.11） |
 | 24 | `read` 按字节硬截断切碎中文/emoji 成乱码 | `truncateUTF8` 回退到 UTF-8 字符边界，两条读取路径都接（v1.11） |
 | 25 | `PickForTurn` 是 stub 永远返回全部工具，MaxTools 形同虚设 | 按相关性打分取 top-budget，核心工具基础分兜底（v1.11） |
+| 26 | TUI 输入框无法输入中文：旧实现 `len(msg.String())==1` 按【字节】判断，中文 1 字符占 3 字节被丢弃 | 改判 `msg.Type==tea.KeyRunes/KeySpace` 并追加 `string(msg.Runes)`；退格按 `[]rune` 切边界，不按字节（v1.12） |
+| 27 | TUI 流式正文雪球堆叠（"我是我是 Ac我是 AcornCode..."）：`part.delta` 的 Data 是【全量累积文本】，TUI 却 `WriteString` 追加 | 按 part ID 整体替换：每次 delta 先 `m.text.Reset()` 再写全量；记 `streamPartID` 标记当前 part（v1.12） |
+| 28 | 第二轮对话报「期望状态 Idle, 当前 Stopped」：Loop 被复用跑多轮，但正常完成/turn 上限/errTurnAborted 把状态停在 Stopped/BuildingRequest，下一轮 `guard(StateIdle)` 失败 | 本轮正常收尾一律归位 `StateIdle`，`StateStopped` 只留给 ctx 取消与 `fatal()`（v1.12） |
+| 29 | TUI 每轮对话覆盖、无法回看历史 | 正文改用 `bubbles/viewport`：`history`(定格问答)+`stream`(当前流式) 拼成内容；每轮 `flushStreamToHistory` 定格。自动跟随仅在 `AtBottom()` 时 `GotoBottom`，否则会打断用户手动上滚（v1.12） |
 
 ## 4. 跑命令
 

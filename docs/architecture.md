@@ -245,7 +245,7 @@ Bubble Tea + Lipgloss。订阅 5 个 Bus topic：
 
 | 事件 | 渲染 |
 |------|------|
-| `part.delta` | 中部正文追加 |
+| `part.delta` | 当前流式回复（整体替换，定格后入历史） |
 | `part.updated` (pending) | 状态栏 `→ tool` |
 | `part.updated` (complete) | 状态栏 `✓ done` |
 | `part.updated` (errored) | 状态栏 `✗ error: ...` |
@@ -254,6 +254,11 @@ Bubble Tea + Lipgloss。订阅 5 个 Bus topic：
 | `error` (fatal) | 状态栏 `FATAL: ...` |
 
 **布局**：状态栏 / 正文 / input box。**权限弹窗**（v1.0.1）：1/Allow / 2/Always / 3/Deny + 左/右循环。
+
+**滚动式对话**（v1.12）：正文区用 `bubbles/viewport` 做可滚动视口。`history`（已定格问答）
++ `stream`（当前流式回复）拼成正文 `SetContent` 给 viewport；每轮结束 `flushStreamToHistory`
+把流式回复定格进 history（不再被下一轮覆盖）。支持 PgUp/PgDn/↑↓/Home/End/鼠标滚轮滚动；
+新内容仅在用户停留底部时 `GotoBottom` 自动跟随，手动上滚翻看历史时不打断。
 
 **TTY 要求**：无 TTY → 清晰错误，CI 用 `--server=:8080`。
 
