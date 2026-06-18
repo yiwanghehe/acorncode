@@ -183,59 +183,6 @@ func TestNative_EmptyData(t *testing.T) {
 	}
 }
 
-// TestNative_RetryHint 验证 RetryHint 生成正确的"自纠正"消息对
-func TestNative_RetryHint(t *testing.T) {
-	n := NewNative()
-	tests := []struct {
-		name    string
-		failed  FailedCall
-		contain string
-	}{
-		{
-			name:    "json_parse_error",
-			failed:  FailedCall{RawText: "{bad", Reason: "json_parse_error", Detail: "unexpected EOF"},
-			contain: "malformed JSON",
-		},
-		{
-			name:    "schema_violation",
-			failed:  FailedCall{Reason: "schema_violation", Detail: "missing field 'path'"},
-			contain: "schema",
-		},
-		{
-			name:    "unknown_tool",
-			failed:  FailedCall{Reason: "unknown_tool", Detail: "foo"},
-			contain: "foo",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			asst, user := n.RetryHint(tt.failed, nil)
-			if asst.Role != "assistant" || asst.Content != tt.failed.RawText {
-				t.Errorf("asst = %+v", asst)
-			}
-			if user.Role != "user" {
-				t.Errorf("user role = %q", user.Role)
-			}
-			if !contains(user.Content, tt.contain) {
-				t.Errorf("user content = %q, 应含 %q", user.Content, tt.contain)
-			}
-		})
-	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
-}
-
 // TestNative_ImplementsStrategy 编译时断言
 func TestNative_ImplementsStrategy(t *testing.T) {
 	var _ Strategy = (*Native)(nil)

@@ -78,9 +78,12 @@ type Strategy interface {
     Name() string
     Prepare(req *ChatRequest, tools []Definition) error
     ParseStream(ctx, raw <-chan RawChunk) <-chan StreamEvent
-    RetryHint(failed FailedCall, tools []Definition) (asst, user Message)
 }
 ```
+
+> **v1.12 减法**：移除从未接线的 `RetryHint` 方法（及 `FailedCall`/`buildRetryHint`）。
+> 工具调用失败的恢复实际由 Agent Loop 的 `circuitBreaker`（三道熔断）+ `errTurnAborted`
+> 重试路径承担，错误以 stderr 回灌模型，不依赖策略层回放。
 
 > **关键接线**（v1.4 修复）：`agent.Loop.buildRequest` 末尾必须调 `strategy.Prepare(req, tools)`，
 > 否则 Prompted/Grammar 注入的 system 说明与 GBNF 约束全部失效（曾长期未接线）。

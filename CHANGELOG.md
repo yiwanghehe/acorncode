@@ -2,6 +2,21 @@
 
 格式：[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.12.0] - 2026-06
+
+### 减法：移除从未接线的 `Strategy.RetryHint` 死代码
+
+`RetryHint`（含 `FailedCall` / `retryHints` / `buildRetryHint` 及三策略各自实现）自规划起
+**从未被生产代码调用**——Agent Loop 的失败恢复实际由 `circuitBreaker`（三道熔断）+
+`errTurnAborted` 重试路径承担，错误以 stderr 回灌模型，不依赖策略层回放。
+
+- 从 `Strategy` 接口移除 `RetryHint` 方法，精简契约。
+- 删除 `toolcall.go` 的 `FailedCall` / `retryHints` / `buildRetryHint`。
+- 删除 `native.go` / `prompted.go` / `grammar.go` 的 `RetryHint` 实现。
+- 删除 `TestNative_RetryHint` 及其专用的 `contains` / `indexOf` helper。
+- 净删 ~110 行（含测试），**0 行为变化**，构建/vet/测试全绿。
+- 文档同步：`docs/architecture.md §3.3`。
+
 ## [1.11.0] - 2026-06
 
 ### 整合：消除三处遗留技术债（SSRF / 工具裁剪 / UTF-8 截断）

@@ -334,12 +334,3 @@ func typeMatches(v any, typ string) bool {
 	}
 	return true // 未知 type 信任
 }
-
-// RetryHint 校验失败时给模型提示
-func (g *Grammar) RetryHint(failed FailedCall, _ []tool.Definition) (llm.Message, llm.Message) {
-	return buildRetryHint(failed, retryHints{
-		JSONParse: "Your last <tool_call> block was malformed JSON: %s. Re-output a single valid <tool_call>{\"name\":\"<id>\",\"arguments\":{...}}</tool_call> block.",
-		Schema:    "Your last tool call failed schema validation: %s. Check required fields and types.",
-		Unknown:   "You called a tool that doesn't exist: %s. Available: read, edit, bash, ...",
-	})
-}

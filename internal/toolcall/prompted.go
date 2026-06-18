@@ -181,12 +181,3 @@ func (p *Prompted) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-c
 	}()
 	return out
 }
-
-// RetryHint 解析失败时给模型提示
-func (p *Prompted) RetryHint(failed FailedCall, _ []tool.Definition) (llm.Message, llm.Message) {
-	return buildRetryHint(failed, retryHints{
-		JSONParse: "Your last <tool_call> block was malformed JSON: %s. Re-output a single valid <tool_call>{...}</tool_call> block.",
-		Schema:    "Your last tool call didn't match the schema: %s. Check field names and types.",
-		Unknown:   "You called a tool that doesn't exist: %s. Available: read, edit, bash, ...",
-	})
-}
