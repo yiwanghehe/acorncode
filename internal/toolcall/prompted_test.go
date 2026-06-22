@@ -209,3 +209,235 @@ func TestPrompted_Name(t *testing.T) {
 		t.Errorf("Name = %s, 期望 prompted", NewPrompted().Name())
 	}
 }
+
+// ========== v1.12 fallback：模型漏写 <tool_call> 包裹的裸 JSON 解析 ==========
+
+// TestPrompted_FallbackBareJSON_ValidTool 验证「裸 JSON + name 命中注册表」
+// 在 EOF 时被识别为 tool call——核心场景（用户截图里的 qwen2.5-coder:1.5b）。
+func TestPrompted_FallbackBareJSON_ValidTool(t *testing.T) {
+	p := NewPrompted()
+	// 注入工具名集合（与真实 Prepare 流程一致）
+	if err := p.Prepare(&llm.ChatRequest{}, []tool.Definition{
+		{ID: "read", JSONSchema: json.RawMessage(`{}`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw := feedPromptedChunks([]llm.RawChunk{
+		{Type: "text", Data: `{"name": "read", "arguments": {"path": "/etc/hosts"}}`},
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectPromptedEvents(t, p.ParseStream(context.Background(), raw))
+
+	var toolCalls []llm.ToolCallEnd
+	for _, ev := range evs {
+		if tc, ok := ev.(llm.ToolCallEnd); ok {
+			toolCalls = append(toolCalls, tc)
+		}
+	}
+	if len(toolCalls) != 1 {
+		t.Fatalf("应识别 fallback tool call, got %d events: %+v", len(toolCalls), evs)
+	}
+	if toolCalls[0].Name != "read" {
+		t.Errorf("name = %q, 期望 read", toolCalls[0].Name)
+	}
+	var args map[string]any
+	_ = json.Unmarshal(toolCalls[0].Args, &args)
+	if args["path"] != "/etc/hosts" {
+		t.Errorf("args.path = %v, 期望 /etc/hosts", args["path"])
+	}
+}
+
+// TestPrompted_FallbackBareJSON_UnknownTool 验证 name 未注册时**不当 tool call**——
+// 防误伤的关键测试：用户让模型输出 JSON 文本、name 不在 tool list 时必须当文本流。
+func TestPrompted_FallbackBareJSON_UnknownTool(t *testing.T) {
+	p := NewPrompted()
+	_ = p.Prepare(&llm.ChatRequest{}, []tool.Definition{
+		{ID: "read", JSONSchema: json.RawMessage(`{}`)},
+	})
+
+	raw := feedPromptedChunks([]llm.RawChunk{
+		{Type: "text", Data: `{"name": "tool_id", "arguments": {"arg1": "value"}}`}, // tool_id 未注册
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectPromptedEvents(t, p.ParseStream(context.Background(), raw))
+
+	var toolCalls int
+	var hasText bool
+	for _, ev := range evs {
+		if _, ok := ev.(llm.ToolCallEnd); ok {
+			toolCalls++
+		}
+		if td, ok := ev.(llm.TextDelta); ok && strings.Contains(td.Text, "tool_id") {
+			hasText = true
+		}
+	}
+	if toolCalls != 0 {
+		t.Errorf("未注册 name 不应识别为 tool call, got %d", toolCalls)
+	}
+	if !hasText {
+		t.Errorf("应作为文本流输出（含 tool_id 字面）")
+	}
+}
+
+// TestPrompted_FallbackBareJSON_UserWantsJSONText 验证用户要 JSON 文本的常见形态：
+// 输出 {"tasks":[...]}（无 name 字段）→ 当文本流，不当 tool call。
+func TestPrompted_FallbackBareJSON_UserWantsJSONText(t *testing.T) {
+	p := NewPrompted()
+	_ = p.Prepare(&llm.ChatRequest{}, []tool.Definition{
+		{ID: "read", JSONSchema: json.RawMessage(`{}`)},
+	})
+
+	raw := feedPromptedChunks([]llm.RawChunk{
+		{Type: "text", Data: `{"tasks": [{"id": 1, "title": "task1"}]}`},
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectPromptedEvents(t, p.ParseStream(context.Background(), raw))
+
+	var toolCalls int
+	var hasText bool
+	for _, ev := range evs {
+		if _, ok := ev.(llm.ToolCallEnd); ok {
+			toolCalls++
+		}
+		if td, ok := ev.(llm.TextDelta); ok && strings.Contains(td.Text, "tasks") {
+			hasText = true
+		}
+	}
+	if toolCalls != 0 {
+		t.Errorf("缺 name 字段不应 fallback, got %d", toolCalls)
+	}
+	if !hasText {
+		t.Errorf("应作为文本流输出")
+	}
+}
+
+// TestPrompted_FallbackBareJSON_WithMarkdownFence 验证模型按引导用 ```json 包裹的
+// JSON 文本不被识别为 tool call——系统 prompt 加 markdown 引导语的契约测试。
+func TestPrompted_FallbackBareJSON_WithMarkdownFence(t *testing.T) {
+	p := NewPrompted()
+	_ = p.Prepare(&llm.ChatRequest{}, []tool.Definition{
+		{ID: "read", JSONSchema: json.RawMessage(`{}`)},
+	})
+
+	raw := feedPromptedChunks([]llm.RawChunk{
+		{Type: "text", Data: "```json\n{\"name\": \"read\", \"arguments\": {\"path\": \"/x\"}}\n```"},
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectPromptedEvents(t, p.ParseStream(context.Background(), raw))
+
+	var toolCalls int
+	for _, ev := range evs {
+		if _, ok := ev.(llm.ToolCallEnd); ok {
+			toolCalls++
+		}
+	}
+	if toolCalls != 0 {
+		t.Errorf("markdown 包裹的 JSON 不应识别为 tool call, got %d", toolCalls)
+	}
+}
+
+// TestPrompted_FallbackBareJSON_NoNameField 缺 name 字段的 JSON 不 fallback
+func TestPrompted_FallbackBareJSON_NoNameField(t *testing.T) {
+	p := NewPrompted()
+	_ = p.Prepare(&llm.ChatRequest{}, []tool.Definition{
+		{ID: "read", JSONSchema: json.RawMessage(`{}`)},
+	})
+
+	raw := feedPromptedChunks([]llm.RawChunk{
+		{Type: "text", Data: `{"arguments": {"path": "/x"}}`},
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectPromptedEvents(t, p.ParseStream(context.Background(), raw))
+
+	var toolCalls int
+	for _, ev := range evs {
+		if _, ok := ev.(llm.ToolCallEnd); ok {
+			toolCalls++
+		}
+	}
+	if toolCalls != 0 {
+		t.Errorf("缺 name 字段不应 fallback, got %d", toolCalls)
+	}
+}
+
+// TestPrompted_FallbackBareJSON_MalformedJSON 非 JSON 文本不被 fallback
+func TestPrompted_FallbackBareJSON_MalformedJSON(t *testing.T) {
+	p := NewPrompted()
+	_ = p.Prepare(&llm.ChatRequest{}, []tool.Definition{
+		{ID: "read", JSONSchema: json.RawMessage(`{}`)},
+	})
+
+	raw := feedPromptedChunks([]llm.RawChunk{
+		{Type: "text", Data: "hello world, this is plain text not JSON"},
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectPromptedEvents(t, p.ParseStream(context.Background(), raw))
+
+	var toolCalls int
+	for _, ev := range evs {
+		if _, ok := ev.(llm.ToolCallEnd); ok {
+			toolCalls++
+		}
+	}
+	if toolCalls != 0 {
+		t.Errorf("非 JSON 不应 fallback, got %d", toolCalls)
+	}
+}
+
+// TestPrompted_Fallback_EmptyArgsAllowed 验证 arguments 缺省时默认 {}——某些工具
+// 真的没有必填参数（fallback 路径要兼容）。
+func TestPrompted_Fallback_EmptyArgsAllowed(t *testing.T) {
+	p := NewPrompted()
+	_ = p.Prepare(&llm.ChatRequest{}, []tool.Definition{
+		{ID: "bash", JSONSchema: json.RawMessage(`{}`)},
+	})
+
+	raw := feedPromptedChunks([]llm.RawChunk{
+		{Type: "text", Data: `{"name": "bash"}`}, // 没有 arguments 字段
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectPromptedEvents(t, p.ParseStream(context.Background(), raw))
+
+	var toolCalls []llm.ToolCallEnd
+	for _, ev := range evs {
+		if tc, ok := ev.(llm.ToolCallEnd); ok {
+			toolCalls = append(toolCalls, tc)
+		}
+	}
+	if len(toolCalls) != 1 {
+		t.Fatalf("缺 arguments 应默认 {}, got %d events", len(toolCalls))
+	}
+	if string(toolCalls[0].Args) != "{}" {
+		t.Errorf("缺 arguments 应默认为 {}, got %q", string(toolCalls[0].Args))
+	}
+}
+
+// TestPrompted_Prepare_PopulatesToolIDs 验证 Prepare 后 toolIDs 被填充；空 list 时清空。
+func TestPrompted_Prepare_PopulatesToolIDs(t *testing.T) {
+	p := NewPrompted()
+	_ = p.Prepare(&llm.ChatRequest{}, []tool.Definition{
+		{ID: "read"}, {ID: "bash"}, {ID: "edit"},
+	})
+	if len(p.toolIDs) != 3 {
+		t.Errorf("toolIDs 应有 3 项, got %d", len(p.toolIDs))
+	}
+	for _, id := range []string{"read", "bash", "edit"} {
+		if _, ok := p.toolIDs[id]; !ok {
+			t.Errorf("toolIDs 缺 %s", id)
+		}
+	}
+
+	// 二次 Prepare 空 list：toolIDs 应被清空，避免上一次残留导致 fallback 误命中
+	_ = p.Prepare(&llm.ChatRequest{}, nil)
+	if p.toolIDs != nil {
+		t.Errorf("空 tool list 应清空 toolIDs, got %v", p.toolIDs)
+	}
+}
