@@ -63,6 +63,10 @@ func (p *Prompted) Prepare(req *llm.ChatRequest, tools []tool.Definition) error 
 		sb.WriteString(fmt.Sprintf("- %s: %s\n", t.ID, t.Description))
 		if len(t.JSONSchema) > 0 {
 			sb.WriteString(fmt.Sprintf("  Arguments schema: %s\n", string(t.JSONSchema)))
+			// v1.12：强调字段类型，避免小模型把 string 字段写成 array 等
+			if types := extractFieldTypes(t.JSONSchema); types != "" {
+				sb.WriteString(fmt.Sprintf("  Field types (STRICT, must match): %s\n", types))
+			}
 		}
 		sb.WriteString("\n")
 	}

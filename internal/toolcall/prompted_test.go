@@ -191,6 +191,13 @@ func TestPrompted_Prepare(t *testing.T) {
 	if !strings.Contains(req.System[1], "<tool_call>") {
 		t.Errorf("system 应含格式示例: %s", req.System[1])
 	}
+	// v1.12：补强字段类型（避免小模型把 string 写成 array 等）
+	if !strings.Contains(req.System[1], "Field types (STRICT") {
+		t.Errorf("system 应含字段类型强调行: %s", req.System[1])
+	}
+	if !strings.Contains(req.System[1], "path: string") {
+		t.Errorf("system 应含 path: string 类型说明: %s", req.System[1])
+	}
 }
 
 func TestPrompted_EmptyToolList_Prepare(t *testing.T) {

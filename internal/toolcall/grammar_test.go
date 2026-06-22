@@ -265,6 +265,14 @@ func TestGrammar_PrepareInjectsSystemPrompt(t *testing.T) {
 	if !strings.Contains(joined, "<tool_call>") {
 		t.Errorf("system 应含 tool_call 说明:\n%s", joined)
 	}
+	// v1.12：补强字段类型（避免小模型把 string 写成 array 等）
+	if !strings.Contains(joined, "Field types (STRICT") {
+		t.Errorf("system 应含字段类型强调行:\n%s", joined)
+	}
+	// read 工具 schema 至少含 path: string
+	if !strings.Contains(joined, "path: string") {
+		t.Errorf("system 应含 path: string 类型说明:\n%s", joined)
+	}
 }
 
 // TestGrammar_ForceToolCall_SetsFormat 验证 v1.4：开启 ForceToolCall 后设置 req.Format。
@@ -350,15 +358,49 @@ func TestGrammar_FallbackBareJSON_ValidTool(t *testing.T) {
 	}
 }
 
-// TestGrammar_FallbackBareJSON_SchemaValidationFallsBackToText 验证 Grammar 在
-// fallback 命中但 schema 校验失败时退回到文本流——不丢内容、让模型下一轮看到错误。
-func TestGrammar_FallbackBareJSON_SchemaValidationFallsBackToText(t *testing.T) {
+// TestGrammar_FallbackBareJSON_MissingRequiredField_StillEmits 验证 Grammar fallback
+// 路径走 lenient 校验：missing required 字段不拒，让工具自己 Execute 里返
+// Result{Status:"error"}——比"显示 JSON 文本给用户"更有可操作性。
+//（严格 `<tool_call>` 路径仍然拒，验证见 TestGrammar_MissingRequiredField_Rejected）
+func TestGrammar_FallbackBareJSON_MissingRequiredField_StillEmits(t *testing.T) {
 	g := NewGrammar()
 	_ = g.Prepare(&llm.ChatRequest{}, grammarTestTools())
 
-	// read 工具要求 path 必填，这里缺 path → schema 校验失败
+	// read 工具要求 path 必填，这里缺 path
 	raw := feedGrammarChunks([]llm.RawChunk{
 		{Type: "text", Data: `{"name": "read", "arguments": {}}`},
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectGrammarEvents(t, g.ParseStream(context.Background(), raw))
+
+	var calls int
+	for _, ev := range evs {
+		if tc, ok := ev.(llm.ToolCallEnd); ok {
+			calls++
+			if tc.Name != "read" {
+				t.Errorf("name = %q, 期望 read（fallback 不拒 missing required）", tc.Name)
+			}
+			// args 应该是空对象 {}（与模型输出一致），让工具自己处理
+			if string(tc.Args) != "{}" {
+				t.Errorf("args 应透传原始 JSON, got %q", string(tc.Args))
+			}
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("fallback 路径下缺 required 字段仍应 emit tool call（让工具兜底）, got %d", calls)
+	}
+}
+
+// TestGrammar_FallbackBareJSON_WrongType_StillRejected 验证 fallback 路径下 type
+// 不匹配仍然拒——type 不匹配是真实 bug，应该 fail fast 而不是让工具猜。
+func TestGrammar_FallbackBareJSON_WrongType_StillRejected(t *testing.T) {
+	g := NewGrammar()
+	_ = g.Prepare(&llm.ChatRequest{}, grammarTestTools())
+
+	// read 工具 path 字段期望 string，这里给 number
+	raw := feedGrammarChunks([]llm.RawChunk{
+		{Type: "text", Data: `{"name": "read", "arguments": {"path": 123}}`},
 		{Type: "finish", Data: "{}"},
 	})
 
@@ -370,15 +412,15 @@ func TestGrammar_FallbackBareJSON_SchemaValidationFallsBackToText(t *testing.T) 
 		if _, ok := ev.(llm.ToolCallEnd); ok {
 			calls++
 		}
-		if td, ok := ev.(llm.TextDelta); ok && strings.Contains(td.Text, "read") {
+		if td, ok := ev.(llm.TextDelta); ok && strings.Contains(td.Text, "path") {
 			hasText = true
 		}
 	}
 	if calls != 0 {
-		t.Errorf("schema 校验失败不应 emit tool call, got %d", calls)
+		t.Errorf("type 不匹配应拒（fallback 也走 type 校验）, got %d", calls)
 	}
 	if !hasText {
-		t.Errorf("schema 校验失败应退回文本流（保留原始 JSON 给模型下一轮看）")
+		t.Errorf("type 不匹配应退回文本流")
 	}
 }
 
@@ -513,5 +555,48 @@ func TestGrammar_Prepare_PopulatesToolIDs(t *testing.T) {
 	_ = g.Prepare(&llm.ChatRequest{}, nil)
 	if g.toolIDs != nil {
 		t.Errorf("空 tool list 应清空 toolIDs, got %v", g.toolIDs)
+	}
+}
+
+// TestExtractFieldTypes 验证 extractFieldTypes helper——从 JSON Schema 抽出 name: type 列表。
+func TestExtractFieldTypes(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+		want   string
+	}{
+		{
+			name:   "bash 完整 schema",
+			schema: `{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}}}`,
+			want:   "command: string, timeout: integer",
+		},
+		{
+			name:   "read 单字段",
+			schema: `{"type":"object","properties":{"path":{"type":"string"}}}`,
+			want:   "path: string",
+		},
+		{
+			name:   "空 schema",
+			schema: `{}`,
+			want:   "",
+		},
+		{
+			name:   "坏 schema",
+			schema: `not json`,
+			want:   "",
+		},
+		{
+			name:   "properties 无 type 字段",
+			schema: `{"type":"object","properties":{"x":{"description":"x"}}}`,
+			want:   "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractFieldTypes(json.RawMessage(tt.schema))
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

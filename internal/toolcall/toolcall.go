@@ -5,6 +5,8 @@ package toolcall
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sort"
 	"strings"
 
 	"acorncode/internal/llm"
@@ -47,6 +49,33 @@ func (e *emitter) Text(text string) bool {
 		return true
 	}
 	return e.Event(llm.TextDelta{Text: text})
+}
+
+// extractFieldTypes 从 JSON Schema 抽出每个字段的 name: type 列表，
+// 渲染成 "name: type, ..." 字符串，方便小模型一眼看清字段类型。
+// （v1.12：补强 system prompt——qwen2.5-coder:1.5b 之类的模型对 raw JSON schema
+// 不敏感，容易把 string 字段写成 array 等。在 Prepare 时把字段类型单独列一行
+// 让模型更容易扫到。）
+func extractFieldTypes(schema json.RawMessage) string {
+	var s struct {
+		Properties map[string]struct {
+			Type string `json:"type"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &s); err != nil || len(s.Properties) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(s.Properties))
+	for name, prop := range s.Properties {
+		if prop.Type != "" {
+			parts = append(parts, fmt.Sprintf("%s: %s", name, prop.Type))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	sort.Strings(parts) // 稳定顺序，方便测试断言
+	return strings.Join(parts, ", ")
 }
 
 // tryFallbackToolCall 校验 buf 是否是「漏写 tool_call 包裹的」裸 JSON 工具调用。

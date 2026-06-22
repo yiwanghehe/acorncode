@@ -73,6 +73,10 @@ func (g *Grammar) Prepare(req *llm.ChatRequest, tools []tool.Definition) error {
 		sb.WriteString(fmt.Sprintf("- %s: %s\n", t.ID, t.Description))
 		if len(t.JSONSchema) > 0 {
 			sb.WriteString(fmt.Sprintf("  Arguments schema: %s\n", string(t.JSONSchema)))
+			// v1.12：强调字段类型，避免小模型把 string 字段写成 array 等
+			if types := extractFieldTypes(t.JSONSchema); types != "" {
+				sb.WriteString(fmt.Sprintf("  Field types (STRICT, must match): %s\n", types))
+			}
 			// v1.3：生成并缓存该工具 arguments 的 GBNF（失败不致命，仅记日志）
 			gbnf, err := SchemaToGBNF(t.JSONSchema)
 			if err != nil {
@@ -181,8 +185,10 @@ func (g *Grammar) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-ch
 			}
 			// v1.12 fallback：模型漏了 <tool_call> 包裹但意图明确时自救
 			if name, args, ok := tryFallbackToolCall(remaining, g.toolIDs); ok {
-				// Grammar 比 Prompted 多一步：跑 schema 校验（v1.0.6 核心）
-				if err := g.validateCall(name, args); err != nil {
+				// Grammar 比 Prompted 多一步：跑 schema 校验（v1.0.6 核心）。
+				// fallback 路径走 lenient（跳过 required），缺字段交给工具自己返
+				// Result{Status:"error"}——比"显示 JSON 文本给用户"更有可操作性。
+				if err := g.validateCall(name, args, false); err != nil {
 					slog.Warn("grammar: fallback 解析后 schema 验证失败",
 						"tool", name, "err", err)
 					// 校验失败退回文本流——不丢内容、让下一轮模型看到
@@ -272,8 +278,8 @@ func (g *Grammar) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-ch
 							continue
 						}
 
-						// v1.0.6 核心：schema 验证
-						if err := g.validateCall(call.Name, call.Arguments); err != nil {
+						// v1.0.6 核心：schema 验证（严格路径：required + type 都查）
+						if err := g.validateCall(call.Name, call.Arguments, true); err != nil {
 							slog.Warn("grammar: tool_call schema 验证失败",
 								"tool", call.Name, "err", err)
 							continue
@@ -300,11 +306,15 @@ func (g *Grammar) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-ch
 
 // validateCall 验证 (tool_name, arguments) 是否合法
 //
-// 检查：
+// strict=true 校验：
 //  1. name 必须在 g.tools 里
 //  2. arguments 必须是合法 JSON 对象
-//  3. arguments 必须匹配 tool 的 JSONSchema（best effort）
-func (g *Grammar) validateCall(name string, args json.RawMessage) error {
+//  3. arguments 必须匹配 tool 的 JSONSchema（required + type，best effort）
+//
+// strict=false（fallback 路径用）只校验 type，跳过 required——
+// 让工具自己 Execute 里返 Result{Status:"error"}（glob/read/edit 等都做了
+// 空值检查），比"显示 JSON 文本给用户"更有可操作性。
+func (g *Grammar) validateCall(name string, args json.RawMessage, strict bool) error {
 	// 1. 找 tool
 	var found *tool.Definition
 	for i := range g.tools {
@@ -326,7 +336,7 @@ func (g *Grammar) validateCall(name string, args json.RawMessage) error {
 		return fmt.Errorf("arguments not a JSON object: %w", err)
 	}
 
-	// 3. best-effort schema 校验（v1.0.6：只校验 required 字段）
+	// 3. best-effort schema 校验
 	if len(found.JSONSchema) == 0 {
 		return nil
 	}
@@ -341,12 +351,15 @@ func (g *Grammar) validateCall(name string, args json.RawMessage) error {
 		// schema 本身坏：信任工具，跳过
 		return nil
 	}
-	for _, req := range schema.Required {
-		if _, ok := raw[req]; !ok {
-			return fmt.Errorf("missing required field: %s", req)
+	// strict 模式才校验 required：fallback 路径下交给工具自己兜底
+	if strict {
+		for _, req := range schema.Required {
+			if _, ok := raw[req]; !ok {
+				return fmt.Errorf("missing required field: %s", req)
+			}
 		}
 	}
-	// 类型校验（粗略）
+	// 类型校验（粗略）：两种模式都做——type 不匹配是真实 bug
 	for k, v := range raw {
 		prop, ok := schema.Properties[k]
 		if !ok {
