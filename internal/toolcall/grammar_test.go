@@ -315,3 +315,203 @@ func TestGrammar_NoForce_NoFormat(t *testing.T) {
 		t.Errorf("默认不应设置 ToolChoice, got %q", req.ToolChoice)
 	}
 }
+
+// ========== v1.12 fallback：与 Prompted 共享同一套裸 JSON 兜底识别 ==========
+
+// TestGrammar_FallbackBareJSON_ValidTool 验证 Grammar 在 EOF 时也能兜底识别裸 JSON。
+// 场景：Ollama --force-tool 约束下模型只输出 JSON 而漏写 `<tool_call>` 包裹。
+func TestGrammar_FallbackBareJSON_ValidTool(t *testing.T) {
+	g := NewGrammar()
+	_ = g.Prepare(&llm.ChatRequest{}, grammarTestTools())
+
+	raw := feedGrammarChunks([]llm.RawChunk{
+		{Type: "text", Data: `{"name": "read", "arguments": {"path": "/tmp/x"}}`},
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectGrammarEvents(t, g.ParseStream(context.Background(), raw))
+
+	var calls []llm.ToolCallEnd
+	for _, ev := range evs {
+		if tc, ok := ev.(llm.ToolCallEnd); ok {
+			calls = append(calls, tc)
+		}
+	}
+	if len(calls) != 1 {
+		t.Fatalf("应识别 fallback tool call, got %d events: %+v", len(calls), evs)
+	}
+	if calls[0].Name != "read" {
+		t.Errorf("name = %q, 期望 read", calls[0].Name)
+	}
+	var args map[string]any
+	_ = json.Unmarshal(calls[0].Args, &args)
+	if args["path"] != "/tmp/x" {
+		t.Errorf("args.path = %v, 期望 /tmp/x", args["path"])
+	}
+}
+
+// TestGrammar_FallbackBareJSON_SchemaValidationFallsBackToText 验证 Grammar 在
+// fallback 命中但 schema 校验失败时退回到文本流——不丢内容、让模型下一轮看到错误。
+func TestGrammar_FallbackBareJSON_SchemaValidationFallsBackToText(t *testing.T) {
+	g := NewGrammar()
+	_ = g.Prepare(&llm.ChatRequest{}, grammarTestTools())
+
+	// read 工具要求 path 必填，这里缺 path → schema 校验失败
+	raw := feedGrammarChunks([]llm.RawChunk{
+		{Type: "text", Data: `{"name": "read", "arguments": {}}`},
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectGrammarEvents(t, g.ParseStream(context.Background(), raw))
+
+	var calls int
+	var hasText bool
+	for _, ev := range evs {
+		if _, ok := ev.(llm.ToolCallEnd); ok {
+			calls++
+		}
+		if td, ok := ev.(llm.TextDelta); ok && strings.Contains(td.Text, "read") {
+			hasText = true
+		}
+	}
+	if calls != 0 {
+		t.Errorf("schema 校验失败不应 emit tool call, got %d", calls)
+	}
+	if !hasText {
+		t.Errorf("schema 校验失败应退回文本流（保留原始 JSON 给模型下一轮看）")
+	}
+}
+
+// TestGrammar_FallbackBareJSON_UnknownTool 验证 name 不在注册表时不当 tool call。
+func TestGrammar_FallbackBareJSON_UnknownTool(t *testing.T) {
+	g := NewGrammar()
+	_ = g.Prepare(&llm.ChatRequest{}, grammarTestTools())
+
+	raw := feedGrammarChunks([]llm.RawChunk{
+		{Type: "text", Data: `{"name": "tool_id", "arguments": {"arg1": "value"}}`},
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectGrammarEvents(t, g.ParseStream(context.Background(), raw))
+
+	var calls int
+	var hasText bool
+	for _, ev := range evs {
+		if _, ok := ev.(llm.ToolCallEnd); ok {
+			calls++
+		}
+		if td, ok := ev.(llm.TextDelta); ok && strings.Contains(td.Text, "tool_id") {
+			hasText = true
+		}
+	}
+	if calls != 0 {
+		t.Errorf("未注册 name 不应识别, got %d", calls)
+	}
+	if !hasText {
+		t.Errorf("应作为文本流输出")
+	}
+}
+
+// TestGrammar_FallbackBareJSON_UserWantsJSONText 用户让模型输出 JSON 文本（无 name）→ 当文本流
+func TestGrammar_FallbackBareJSON_UserWantsJSONText(t *testing.T) {
+	g := NewGrammar()
+	_ = g.Prepare(&llm.ChatRequest{}, grammarTestTools())
+
+	raw := feedGrammarChunks([]llm.RawChunk{
+		{Type: "text", Data: `{"tasks": [{"id": 1}, {"id": 2}]}`},
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectGrammarEvents(t, g.ParseStream(context.Background(), raw))
+
+	var calls int
+	var hasText bool
+	for _, ev := range evs {
+		if _, ok := ev.(llm.ToolCallEnd); ok {
+			calls++
+		}
+		if td, ok := ev.(llm.TextDelta); ok && strings.Contains(td.Text, "tasks") {
+			hasText = true
+		}
+	}
+	if calls != 0 {
+		t.Errorf("缺 name 字段不应 fallback, got %d", calls)
+	}
+	if !hasText {
+		t.Errorf("应作为文本流输出")
+	}
+}
+
+// TestGrammar_FallbackBareJSON_WithMarkdownFence ```json 包裹的文本不被识别
+func TestGrammar_FallbackBareJSON_WithMarkdownFence(t *testing.T) {
+	g := NewGrammar()
+	_ = g.Prepare(&llm.ChatRequest{}, grammarTestTools())
+
+	raw := feedGrammarChunks([]llm.RawChunk{
+		{Type: "text", Data: "```json\n{\"name\": \"read\", \"arguments\": {\"path\": \"/x\"}}\n```"},
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectGrammarEvents(t, g.ParseStream(context.Background(), raw))
+
+	var calls int
+	for _, ev := range evs {
+		if _, ok := ev.(llm.ToolCallEnd); ok {
+			calls++
+		}
+	}
+	if calls != 0 {
+		t.Errorf("markdown 包裹不应识别, got %d", calls)
+	}
+}
+
+// TestGrammar_Fallback_InCallTruncated 在 <tool_call> 块被截断（缺 </tool_call>）时
+// 警告并丢弃残留 JSON 而不 fallback——半成品 JSON 不能安全解析。
+func TestGrammar_Fallback_InCallTruncated(t *testing.T) {
+	g := NewGrammar()
+	_ = g.Prepare(&llm.ChatRequest{}, grammarTestTools())
+
+	raw := feedGrammarChunks([]llm.RawChunk{
+		{Type: "text", Data: `<tool_call>{"name": "read", "arguments": {"path": "/x"}}`}, // 缺 </tool_call>
+		{Type: "finish", Data: "{}"},
+	})
+
+	evs := collectGrammarEvents(t, g.ParseStream(context.Background(), raw))
+
+	var calls int
+	var hasFinish bool
+	for _, ev := range evs {
+		if _, ok := ev.(llm.ToolCallEnd); ok {
+			calls++
+		}
+		if _, ok := ev.(llm.FinishEvent); ok {
+			hasFinish = true
+		}
+	}
+	if calls != 0 {
+		t.Errorf("截断的 tool_call 块不应 emit, got %d", calls)
+	}
+	if !hasFinish {
+		t.Errorf("截断块仍应 emit finish 事件")
+	}
+}
+
+// TestGrammar_Prepare_PopulatesToolIDs 验证 Prepare 后 toolIDs 被填充；空 list 时清空
+func TestGrammar_Prepare_PopulatesToolIDs(t *testing.T) {
+	g := NewGrammar()
+	_ = g.Prepare(&llm.ChatRequest{}, grammarTestTools())
+	if len(g.toolIDs) != 2 {
+		t.Errorf("toolIDs 应有 2 项, got %d", len(g.toolIDs))
+	}
+	for _, id := range []string{"read", "edit"} {
+		if _, ok := g.toolIDs[id]; !ok {
+			t.Errorf("toolIDs 缺 %s", id)
+		}
+	}
+
+	// 二次 Prepare 空 list：toolIDs 应被清空，避免上一次残留
+	_ = g.Prepare(&llm.ChatRequest{}, nil)
+	if g.toolIDs != nil {
+		t.Errorf("空 tool list 应清空 toolIDs, got %v", g.toolIDs)
+	}
+}

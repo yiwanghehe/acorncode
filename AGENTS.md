@@ -97,7 +97,7 @@ func (r *Xxx) Execute(ctx context.Context, args json.RawMessage, tc Context) (Re
 | 27 | TUI 流式正文雪球堆叠（"我是我是 Ac我是 AcornCode..."）：`part.delta` 的 Data 是【全量累积文本】，TUI 却 `WriteString` 追加 | 按 part ID 整体替换：每次 delta 先 `m.text.Reset()` 再写全量；记 `streamPartID` 标记当前 part（v1.12） |
 | 28 | 第二轮对话报「期望状态 Idle, 当前 Stopped」：Loop 被复用跑多轮，但正常完成/turn 上限/errTurnAborted 把状态停在 Stopped/BuildingRequest，下一轮 `guard(StateIdle)` 失败 | 本轮正常收尾一律归位 `StateIdle`，`StateStopped` 只留给 ctx 取消与 `fatal()`（v1.12） |
 | 29 | TUI 每轮对话覆盖、无法回看历史 | 正文改用 `bubbles/viewport`：`history`(定格问答)+`stream`(当前流式) 拼成内容；每轮 `flushStreamToHistory` 定格。自动跟随仅在 `AtBottom()` 时 `GotoBottom`，否则会打断用户手动上滚（v1.12） |
-| 30 | Prompted 策略小模型漏写 `<tool_call>` 包裹时，裸 JSON 直接当文本输出 | EOF 时尝试 fallback：三层条件（schema 严格 + name 命中注册表 + 不在 markdown 包裹内）全中才识别为 tool call；系统 prompt 引导"想输出 JSON 文本"用 ```json 代码块，避免与工具调用冲突（v1.12） |
+| 30 | Prompted / Grammar 策略小模型漏写 `<tool_call>` 包裹时，裸 JSON 直接当文本输出 | EOF 时尝试 fallback：三层条件（schema 严格 + name 命中注册表 + 不在 markdown 包裹内）全中才识别为 tool call；Grammar 额外跑 schema 校验失败退回文本流；系统 prompt 引导"想输出 JSON 文本"用 ```json 代码块，避免与工具调用冲突（v1.12）；helper 抽到 `toolcall.go` 共享 |
 
 ## 4. 跑命令
 

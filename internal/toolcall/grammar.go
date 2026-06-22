@@ -28,6 +28,9 @@ type Grammar struct {
 	callSeq  atomic.Uint64
 	tools    []tool.Definition // Prepare 时存
 	grammars map[string]string // tool ID → 该工具 arguments 的 GBNF
+	// toolIDs 是 Prepare 注入的已知工具名集合，供 EOF 时 fallback 校验（v1.12）。
+	// 与 Prompted 共享同一套裸 JSON 兜底识别规则，跨策略保持一致。
+	toolIDs map[string]struct{}
 
 	// ForceToolCall 为 true 时，Prepare 会设置 req.Format（JSON Schema），
 	// 强制 provider（Ollama format）输出符合「工具调用 wrapper」的 JSON。
@@ -53,7 +56,15 @@ func (g *Grammar) Prepare(req *llm.ChatRequest, tools []tool.Definition) error {
 		g.grammars = make(map[string]string)
 	}
 	if len(tools) == 0 {
+		// 没工具时清空 toolIDs，避免上一次 Prepare 的残留导致 fallback 误命中
+		g.toolIDs = nil
 		return nil
+	}
+
+	// 记录本轮已注册工具名（fallback 校验用，与 Prompted 共用同一套规则）
+	g.toolIDs = make(map[string]struct{}, len(tools))
+	for _, t := range tools {
+		g.toolIDs[t.ID] = struct{}{}
 	}
 
 	var sb strings.Builder
@@ -155,28 +166,66 @@ func (g *Grammar) ParseStream(ctx context.Context, raw <-chan llm.RawChunk) <-ch
 		s := &state{}
 		em := newEmitter(ctx, out)
 
+		// flushAtEOF 在 EOF 时统一处理残留 buf：先尝试 fallback 解析，
+		// 命中后过 schema 校验再 emit ToolCallEnd，否则当文本流。
+		// 返回 false 表示 ctx 已取消。
+		flushAtEOF := func(usage llm.Usage) bool {
+			if s.inCall {
+				// tool_call 块被截断（缺 </tool_call>），记录警告并丢弃残留 JSON
+				slog.Warn("grammar: tool_call 块未闭合，丢弃残留", "buf", s.buf.String())
+				return em.Event(llm.FinishEvent{Reason: "stop", Usage: usage})
+			}
+			remaining := strings.TrimSpace(s.buf.String())
+			if remaining == "" {
+				return em.Event(llm.FinishEvent{Reason: "stop", Usage: usage})
+			}
+			// v1.12 fallback：模型漏了 <tool_call> 包裹但意图明确时自救
+			if name, args, ok := tryFallbackToolCall(remaining, g.toolIDs); ok {
+				// Grammar 比 Prompted 多一步：跑 schema 校验（v1.0.6 核心）
+				if err := g.validateCall(name, args); err != nil {
+					slog.Warn("grammar: fallback 解析后 schema 验证失败",
+						"tool", name, "err", err)
+					// 校验失败退回文本流——不丢内容、让下一轮模型看到
+					if !em.Text(remaining) {
+						return false
+					}
+					return em.Event(llm.FinishEvent{Reason: "stop", Usage: usage})
+				}
+				slog.Info("grammar: fallback 解析裸 JSON 为 tool call",
+					"name", name, "args", string(args))
+				if !em.Event(llm.ToolCallEnd{
+					CallID: fmt.Sprintf("call_%d", g.callSeq.Add(1)),
+					Name:   name,
+					Args:   args,
+				}) {
+					return false
+				}
+				return em.Event(llm.FinishEvent{Reason: "stop", Usage: usage})
+			}
+			// fallback 不命中 → 当文本流
+			if !em.Text(remaining) {
+				return false
+			}
+			return em.Event(llm.FinishEvent{Reason: "stop", Usage: usage})
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case chunk, ok := <-raw:
 				if !ok {
-					if !s.inCall {
-						em.Text(s.buf.String())
-					}
+					_ = flushAtEOF(llm.Usage{})
 					return
 				}
 				if chunk.Type == "text" {
 					s.buf.WriteString(chunk.Data)
 				} else if chunk.Type == "finish" {
-					if !s.inCall {
-						em.Text(s.buf.String())
-					}
 					var usage llm.Usage
 					if chunk.Data != "" {
 						_ = json.Unmarshal([]byte(chunk.Data), &usage)
 					}
-					em.Event(llm.FinishEvent{Reason: "stop", Usage: usage})
+					_ = flushAtEOF(usage)
 					return
 				} else if chunk.Type == "error" {
 					em.Event(llm.ErrorEvent{Err: fmt.Errorf("%s", chunk.Data)})
